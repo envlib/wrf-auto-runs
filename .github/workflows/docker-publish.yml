@@ -74,6 +74,10 @@ jobs:
         if: steps.check.outputs.exists != 'true'
         run: apptainer build wrf-era5-runs.sif docker-daemon://${{ steps.version.outputs.image }}
 
+      - name: Log in to Docker Hub (Apptainer)
+        if: steps.check.outputs.exists != 'true'
+        run: apptainer remote login --username ${{ secrets.DOCKERHUB_USERNAME }} --password ${{ secrets.DOCKERHUB_TOKEN }} docker://registry-1.docker.io
+
       - name: Push SIF to Docker Hub via ORAS
         if: steps.check.outputs.exists != 'true'
         run: apptainer push wrf-era5-runs.sif oras://registry-1.docker.io/mullenkamp/wrf-era5-runs:${{ steps.version.outputs.version }}-sif
