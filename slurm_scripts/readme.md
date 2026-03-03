@@ -158,6 +158,9 @@ Each job gets an isolated data directory (using `$SLURM_JOB_ID` or `$SLURM_ARRAY
 squeue -u $USER          # List your running/queued jobs
 scancel <job_id>          # Cancel a job
 scancel <array_job_id>    # Cancel all tasks in an array
+
+sinfo --format="%P %C"
+
 ```
 
 ## Completed jobs
