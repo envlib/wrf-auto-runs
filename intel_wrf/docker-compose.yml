@@ -2,7 +2,7 @@ version: '3.3'
 
 services:
   wrf-runs:
-    image: mullenkamp/wrf-era5-runs:2.3
+    image: mullenkamp/wrf-era5-runs-intel:1.0
     # user: ${MY_UID}:${MY_GID}
     shm_size: '1gb'
     volumes:
