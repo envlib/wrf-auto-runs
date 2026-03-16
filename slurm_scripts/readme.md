@@ -20,7 +20,7 @@ A pre-built SIF is published alongside each Docker image. This avoids the squash
 
 ```bash
 module load Apptainer
-export VERSION=2.2
+export VERSION=2.3
 apptainer pull oras://registry-1.docker.io/mullenkamp/wrf-era5-runs:${VERSION}-sif
 mv wrf-era5-runs_${VERSION}-sif.sif wrf-era5-runs_${VERSION}.sif
 ```
@@ -31,7 +31,7 @@ If your HPC allows it, you can convert directly from Docker Hub:
 
 ```bash
 module load Apptainer
-export VERSION=2.2
+export VERSION=2.3
 apptainer pull docker://mullenkamp/wrf-era5-runs:${VERSION}
 ```
 
