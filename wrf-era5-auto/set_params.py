@@ -433,13 +433,13 @@ def set_nml_params(domains=None):
     if not isinstance(surface_physics, list):
         surface_physics = [surface_physics]
 
-    if 4 in surface_physics:
-        subprocess.run(
-            'ln -sf GEOGRID.TBL.ARW.noahmp GEOGRID.TBL',
-            shell=True,
-            check=False,
-            cwd=params.wps_path.joinpath('geogrid'),
-        )
+    # if 4 in surface_physics:
+    #     subprocess.run(
+    #         'ln -sf GEOGRID.TBL.ARW.noahmp GEOGRID.TBL',
+    #         shell=True,
+    #         check=False,
+    #         cwd=params.wps_path.joinpath('geogrid'),
+    #     )
 
     #############################################
     ### ASSEMBLE AND WRITE NAMELISTS
