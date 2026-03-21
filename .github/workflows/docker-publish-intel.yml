@@ -20,7 +20,7 @@ jobs:
         run: |
           VERSION=$(grep 'image:' intel_wrf/docker-compose.yml | sed 's/.*://;s/[[:space:]]*//')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "image=mullenkamp/wrf-era5-runs-intel:$VERSION" >> "$GITHUB_OUTPUT"
+          echo "image=mullenkamp/wrf-auto-runs-intel:$VERSION" >> "$GITHUB_OUTPUT"
           echo "Extracted version: $VERSION"
 
       - name: Check if version changed
@@ -76,7 +76,7 @@ jobs:
 
       - name: Build SIF from Docker image
         if: steps.check.outputs.exists != 'true'
-        run: apptainer build wrf-era5-runs-intel.sif docker-daemon://${{ steps.version.outputs.image }}
+        run: apptainer build wrf-auto-runs-intel.sif docker-daemon://${{ steps.version.outputs.image }}
 
       - name: Log in to Docker Hub (Apptainer)
         if: steps.check.outputs.exists != 'true'
@@ -84,7 +84,7 @@ jobs:
 
       - name: Push SIF to Docker Hub via ORAS
         if: steps.check.outputs.exists != 'true'
-        run: apptainer push wrf-era5-runs-intel.sif oras://registry-1.docker.io/mullenkamp/wrf-era5-runs-intel:${{ steps.version.outputs.version }}-sif
+        run: apptainer push wrf-auto-runs-intel.sif oras://registry-1.docker.io/mullenkamp/wrf-auto-runs-intel:${{ steps.version.outputs.version }}-sif
 
       - name: Job summary
         if: steps.check.outputs.exists != 'true'
@@ -99,6 +99,6 @@ jobs:
 
           **SIF image (via ORAS):**
           \`\`\`bash
-          apptainer pull oras://registry-1.docker.io/mullenkamp/wrf-era5-runs-intel:${{ steps.version.outputs.version }}-sif
+          apptainer pull oras://registry-1.docker.io/mullenkamp/wrf-auto-runs-intel:${{ steps.version.outputs.version }}-sif
           \`\`\`
           EOF

@@ -7,7 +7,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN uv pip install --no-cache-dir -r requirements.txt
 
-COPY wrf-era5-auto/*.py .
+COPY wrf-auto-runs/*.py .
 
 CMD ["uv", "run", "python", "-u", "main.py"]
 

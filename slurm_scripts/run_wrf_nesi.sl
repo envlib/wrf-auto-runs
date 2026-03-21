@@ -1,5 +1,5 @@
 #!/bin/bash -e
-#SBATCH --job-name=wrf-era5
+#SBATCH --job-name=wrf-auto
 #SBATCH --nodes=1                     # node count
 #SBATCH --account=nesi99999           # Replace with your NeSI project code
 #SBATCH --partition=genoa             # Or: large, bigmem, hgx — check nesi.org.nz
@@ -7,21 +7,21 @@
 #SBATCH --ntasks=8                    # MPI ranks for wrf.exe (maps to n_cores)
 #SBATCH --mem=32G
 #SBATCH --hint=nomultithread
-#SBATCH --output=wrf-era5_%j.log
-#SBATCH --error=wrf-era5_%j.err
+#SBATCH --output=wrf-auto_%j.log
+#SBATCH --error=wrf-auto_%j.err
 
 # =============================================================================
-# WRF-ERA5 Pipeline — Apptainer on NeSI
+# WRF-Auto Pipeline — Apptainer on NeSI
 #
-# Runs the full WRF-ERA5 pipeline (main.py) inside an Apptainer container
-# converted from the Docker image mullenkamp/wrf-era5-runs.
+# Runs the full WRF-Auto pipeline (main.py) inside an Apptainer container
+# converted from the Docker image mullenkamp/wrf-auto-runs.
 #
 # Prerequisites (one-time setup from a login node):
 #
 #   1. Pull the SIF image (update IMAGE_VERSION in Configuration to match):
 #        module load Apptainer
-#        apptainer pull docker://mullenkamp/wrf-era5-runs:<VERSION>
-#        mv wrf-era5-runs_<VERSION>.sif /nesi/nobackup/$PROJECT_CODE/$USER/
+#        apptainer pull docker://mullenkamp/wrf-auto-runs:<VERSION>
+#        mv wrf-auto-runs_<VERSION>.sif /nesi/nobackup/$PROJECT_CODE/$USER/
 #
 #   2. Download WPS_GEOG static data:
 #        See https://www2.mmm.ucar.edu/wrf/users/download/get_sources_wps_geog.html
@@ -38,7 +38,7 @@
 # ---- Configuration ----------------------------------------------------------
 
 PROJECT_CODE="nesi99999"                                        # NeSI project code
-IMAGE_NAME="wrf-era5-runs"                                      # Docker/SIF image name
+IMAGE_NAME="wrf-auto-runs"                                      # Docker/SIF image name
 IMAGE_VERSION="2.2"                                             # Docker/SIF image version
 SCRATCH="/nesi/nobackup/${PROJECT_CODE}/${USER}"                # Scratch/nobackup base
 SIF_PATH="${SCRATCH}/${IMAGE_NAME}_${IMAGE_VERSION}.sif"        # Apptainer SIF image
@@ -119,7 +119,7 @@ fi
 
 # ---- Run the pipeline -------------------------------------------------------
 
-echo "Starting WRF-ERA5 pipeline at $(date)"
+echo "Starting WRF-Auto pipeline at $(date)"
 echo "SIF: ${SIF_PATH}"
 echo "Cores: ${SLURM_NTASKS}"
 echo "Data dir: ${DATA_DIR}"

@@ -183,7 +183,10 @@ def set_nml_params(domains=None):
     wps_ungrib = dict(defaults.WPS_UNGRIB_DEFAULTS)
 
     wps_metgrid = dict(defaults.WPS_METGRID_DEFAULTS)
-    wps_metgrid['fg_name'] = str(data_path.joinpath('ERA5'))
+    if params.is_wrf_input:
+        wps_metgrid['fg_name'] = str(data_path.joinpath('WRF'))
+    else:
+        wps_metgrid['fg_name'] = str(data_path.joinpath('ERA5'))
     wps_metgrid['opt_metgrid_tbl_path'] = str(params.metgrid_exe.parent.joinpath('metgrid'))
     wps_metgrid['opt_output_from_metgrid_path'] = str(data_path)
 

@@ -198,8 +198,10 @@ feedback = 0                            # One-way (0) or two-way (1) nesting
 # path = '/wrf-1k/output/d03'             # Path to prior parent-domain wrfout files
 
 # =============================================================================
-# Remote storage -- rclone configuration for ERA5 downloads and output uploads.
-# Both sections use rclone config syntax (type, provider, endpoint, credentials).
+# Remote storage -- rclone configuration for data downloads and output uploads.
+# All sections use rclone config syntax (type, provider, endpoint, credentials).
+# Configure either [remote.era5] OR [remote.wrf] as boundary condition input
+# (mutually exclusive -- if [remote.wrf] is present, ERA5 is ignored).
 # =============================================================================
 
 [remote]
@@ -211,6 +213,15 @@ endpoint = 'https://s3.ca-west-1.s4.mega.io'
 access_key_id = ''
 secret_access_key = ''
 path = '/data/ncar/era5/'
+
+# [remote.wrf]                              # Source for WRF output files (alternative to ERA5)
+# type = 's3'
+# provider = 'Mega'
+# endpoint = 'https://s3.ca-west-1.s4.mega.io'
+# access_key_id = ''
+# secret_access_key = ''
+# path = '/wrf-1k/output/'
+# domain = 'd03'                            # Which domain's wrfout files to use as input
 
 # [remote.output]                          # Destination for WRF output uploads (optional)
 # type = 's3'

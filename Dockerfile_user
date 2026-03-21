@@ -17,7 +17,7 @@ RUN mkdir /data
 RUN chown -R 1000:1000 /data
 RUN chmod -R 777 /data
 
-COPY wrf-era5-auto/*.py .
+COPY wrf-auto-runs/*.py .
 RUN chown 1000:1000 ./*.py
 RUN chmod -R 777 ./*.py
 

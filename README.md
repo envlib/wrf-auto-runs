@@ -29,6 +29,13 @@ It should be something like this:
 ```
 The first part is the local path then the docker image path (with a colon in between)
 
+The static data for NZ can be downloaded and extracted like this:
+```bash
+wget -N https://b2.envlib.xyz/file/envlib/wrf/static_data/nz_wps_geog.tar.zst
+tar --zstd -xf nz_wps_geog.tar.zst
+rm nz_wps_geog.tar.zst
+```
+
 ### Mount the data directory
 Internally, WRF in the docker image runs all processes in the /data path (in the docker image). The user can mount this path to their local drive to see the processes and data.
 

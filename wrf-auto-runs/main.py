@@ -15,6 +15,8 @@ import sentry_sdk
 from set_params import check_nml_params, set_nml_params, set_ndown_params
 from download_era5 import dl_era5
 from run_era5_to_int import run_era5_to_int
+from download_wrf import dl_wrf
+from run_wrf_to_int import run_wrf_to_int
 from run_metgrid import run_metgrid
 from run_real import run_real
 from monitor_wrf import monitor_wrf
@@ -106,11 +108,18 @@ if ndown_check:
 else:
     print('-- A full nested domain model will be run')
 
-print('-- Downloading ERA5 data...')
-era5_check = dl_era5(start_date, end_date)
+if params.is_wrf_input:
+    print('-- Downloading WRF data...')
+    dl_wrf(start_date, end_date)
 
-print('-- Processing ERA5 to WPS Int...')
-run_era5_to_int(start_date, end_date, hour_interval)
+    print('-- Processing WRF to WPS Int...')
+    run_wrf_to_int(start_date, end_date, hour_interval)
+else:
+    print('-- Downloading ERA5 data...')
+    dl_era5(start_date, end_date)
+
+    print('-- Processing ERA5 to WPS Int...')
+    run_era5_to_int(start_date, end_date, hour_interval)
 
 print('-- Running metgrid.exe...')
 run_metgrid()

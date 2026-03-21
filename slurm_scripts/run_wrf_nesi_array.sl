@@ -1,5 +1,5 @@
 #!/bin/bash -e
-#SBATCH --job-name=wrf-era5
+#SBATCH --job-name=wrf-auto
 #SBATCH --nodes=1                     # node count
 #SBATCH --account=nesi99999           # Replace with your NeSI project code
 #SBATCH --partition=genoa             # Or: large, bigmem, hgx — check nesi.org.nz
@@ -7,12 +7,12 @@
 #SBATCH --ntasks=8                    # MPI ranks for wrf.exe (maps to n_cores)
 #SBATCH --mem=32G
 #SBATCH --hint=nomultithread
-#SBATCH --output=wrf-era5_%A_%a.log
-#SBATCH --error=wrf-era5_%A_%a.err
+#SBATCH --output=wrf-auto_%A_%a.log
+#SBATCH --error=wrf-auto_%A_%a.err
 #SBATCH --array=0-11                  # Adjust range for number of runs
 
 # =============================================================================
-# WRF-ERA5 Pipeline — Apptainer on NeSI (Job Array)
+# WRF-Auto Pipeline — Apptainer on NeSI (Job Array)
 #
 # Submits multiple WRF runs as a Slurm job array, each starting at a different
 # date. The start date for each task is computed from a base date and a step
@@ -35,7 +35,7 @@
 # ---- Configuration ----------------------------------------------------------
 
 PROJECT_CODE="nesi99999"                                        # NeSI project code
-IMAGE_NAME="wrf-era5-runs"                                      # Docker/SIF image name
+IMAGE_NAME="wrf-auto-runs"                                      # Docker/SIF image name
 IMAGE_VERSION="2.2"                                             # Docker/SIF image version
 SCRATCH="/nesi/nobackup/${PROJECT_CODE}/${USER}"                # Scratch/nobackup base
 SIF_PATH="${SCRATCH}/${IMAGE_NAME}_${IMAGE_VERSION}.sif"        # Apptainer SIF image
@@ -114,7 +114,7 @@ fi
 
 # ---- Run the pipeline -------------------------------------------------------
 
-echo "Starting WRF-ERA5 pipeline at $(date)"
+echo "Starting WRF-Auto pipeline at $(date)"
 echo "SIF: ${SIF_PATH}"
 echo "Cores: ${SLURM_NTASKS}"
 echo "Start date: ${START_DATE}"

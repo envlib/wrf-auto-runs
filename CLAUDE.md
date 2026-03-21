@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Automated pipeline to run the WRF (Weather Research and Forecasting) model using ERA5 reanalysis data as boundary/initial conditions. Runs inside a Docker container (`mullenkamp/wrf-era5-runs:1.1`) with WRF 4.6.1-ARW and WPS 4.6.0 pre-installed. All configuration is driven by a single `parameters.toml` file (gitignored; see `parameters_example.toml`).
+Automated pipeline to run the WRF (Weather Research and Forecasting) model using ERA5 reanalysis data or WRF output as boundary/initial conditions. Runs inside a Docker container (`mullenkamp/wrf-auto-runs:2.3`) with WRF 4.6.1-ARW and WPS 4.6.0 pre-installed. All configuration is driven by a single `parameters.toml` file (gitignored; see `parameters_example.toml`).
 
 ## Commands
 

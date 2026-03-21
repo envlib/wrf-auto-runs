@@ -1,17 +1,17 @@
-# Slurm Scripts for WRF-ERA5 Pipeline
+# Slurm Scripts for WRF-Auto Pipeline
 
-These scripts run the WRF-ERA5 pipeline inside an Apptainer container on HPC clusters managed by Slurm.
+These scripts run the WRF-Auto pipeline inside an Apptainer container on HPC clusters managed by Slurm.
 
 ## Prerequisites
 
 ### 1. SIF Image
 
-The pipeline runs inside an Apptainer (SIF) image converted from the Docker image `mullenkamp/wrf-era5-runs`. Each script has `IMAGE_NAME` and `IMAGE_VERSION` variables at the top of its Configuration section — update `IMAGE_VERSION` when switching to a new release.
+The pipeline runs inside an Apptainer (SIF) image converted from the Docker image `mullenkamp/wrf-auto-runs`. Each script has `IMAGE_NAME` and `IMAGE_VERSION` variables at the top of its Configuration section — update `IMAGE_VERSION` when switching to a new release.
 
 **Option A: Download the pre-built image (recommended)**
 
 ```bash
-wget -N https://b2.envlib.xyz/file/envlib/sif/wrf-era5-runs_<VERSION>.sif
+wget -N https://b2.envlib.xyz/file/envlib/sif/wrf-auto-runs_<VERSION>.sif
 ```
 
 **Option B: Pull pre-built SIF via ORAS**
@@ -21,8 +21,8 @@ A pre-built SIF is published alongside each Docker image. This avoids the squash
 ```bash
 module load Apptainer
 export VERSION=2.3
-apptainer pull oras://registry-1.docker.io/mullenkamp/wrf-era5-runs:${VERSION}-sif
-mv wrf-era5-runs_${VERSION}-sif.sif wrf-era5-runs_${VERSION}.sif
+apptainer pull oras://registry-1.docker.io/mullenkamp/wrf-auto-runs:${VERSION}-sif
+mv wrf-auto-runs_${VERSION}-sif.sif wrf-auto-runs_${VERSION}.sif
 ```
 
 **Option C: Build from Docker Hub**
@@ -32,25 +32,25 @@ If your HPC allows it, you can convert directly from Docker Hub:
 ```bash
 module load Apptainer
 export VERSION=2.3
-apptainer pull docker://mullenkamp/wrf-era5-runs:${VERSION}
+apptainer pull docker://mullenkamp/wrf-auto-runs:${VERSION}
 ```
 
 Note: This may fail on some HPC systems due to memory or permission constraints during the squashfs build. If so, build locally and transfer:
 
 ```bash
 # On your local machine
-apptainer pull docker://mullenkamp/wrf-era5-runs:${VERSION}
+apptainer pull docker://mullenkamp/wrf-auto-runs:${VERSION}
 
 # Copy to HPC
-scp wrf-era5-runs_${VERSION}.sif user@hpc:/path/to/scratch/
+scp wrf-auto-runs_${VERSION}.sif user@hpc:/path/to/scratch/
 ```
 
 If you only have Docker locally (no Apptainer):
 
 ```bash
-docker pull mullenkamp/wrf-era5-runs:${VERSION}
-docker save mullenkamp/wrf-era5-runs:${VERSION} -o wrf-era5-runs_${VERSION}.tar
-apptainer build wrf-era5-runs_${VERSION}.sif docker-archive://wrf-era5-runs_${VERSION}.tar
+docker pull mullenkamp/wrf-auto-runs:${VERSION}
+docker save mullenkamp/wrf-auto-runs:${VERSION} -o wrf-auto-runs_${VERSION}.tar
+apptainer build wrf-auto-runs_${VERSION}.sif docker-archive://wrf-auto-runs_${VERSION}.tar
 ```
 
 ### 2. WPS_GEOG Static Data
@@ -174,5 +174,5 @@ sacct -j <job_id> --format=JobID,MaxRSS,MaxVMSize,Elapsed  --units=G # List the 
 ```
 
 Log files are written to the submission directory:
-- Single run: `wrf-era5_<job_id>.log`
-- Array: `wrf-era5_<array_job_id>_<task_id>.log`
+- Single run: `wrf-auto_<job_id>.log`
+- Array: `wrf-auto_<array_job_id>_<task_id>.log`
