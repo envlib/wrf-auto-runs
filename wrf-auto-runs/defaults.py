@@ -167,6 +167,25 @@ VARS_3D = {
     'TKE_PBL',
 }
 
+# Named presets: each maps to a set of WRF output variables required by a
+# specific downstream tool.  Users select presets via ``output_presets`` in
+# parameters.toml; the variables are merged with any explicit
+# ``output_variables`` list before ncks filtering is applied.
+OUTPUT_PRESETS = {
+    'wrf_to_int': {
+        # 3D atmospheric (eta-level)
+        'T', 'U', 'V', 'P', 'PB', 'PH', 'PHB', 'QVAPOR',
+        # Surface (always required by wrf_to_int)
+        'PSFC', 'T2', 'HGT', 'TSK', 'U10', 'V10', 'Q2', 'XLAND',
+        # Wind rotation (optional in wrf_to_int, but must be present to rotate)
+        'COSALPHA', 'SINALPHA',
+        # Optional surface fields
+        'SEAICE', 'SST', 'SNOW', 'SNOWH',
+        # Soil fields
+        'DZS', 'SMOIS', 'TSLB',
+    },
+}
+
 # ============================================================
 # Field Classification
 # ============================================================

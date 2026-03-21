@@ -11,6 +11,7 @@ import pathlib
 
 from defaults import GEOGRID_ARRAY_FIELDS as geogrid_array_fields
 from defaults import GEOGRID_SINGLE_FIELDS as geogrid_single_fields
+from defaults import OUTPUT_PRESETS
 
 ############################################
 ### Read params file
@@ -56,10 +57,21 @@ if 'n_cores' in os.environ:
 if 'duration_hours' in os.environ:
     file['time_control']['duration_hours'] = int(os.environ['duration_hours'])
 
-if 'output_variables' in file:
-    output_variables = file['output_variables']
-else:
-    output_variables = None
+## Resolve output presets + user variables into a single list
+_preset_vars = set()
+if 'output_presets' in file:
+    _raw_presets = file['output_presets']
+    if isinstance(_raw_presets, str):
+        _raw_presets = [_raw_presets]
+    for _p in _raw_presets:
+        if _p not in OUTPUT_PRESETS:
+            raise ValueError(f"Unknown output preset: '{_p}'. Available presets: {sorted(OUTPUT_PRESETS.keys())}")
+        _preset_vars.update(OUTPUT_PRESETS[_p])
+
+_user_vars = set(file['output_variables']) if 'output_variables' in file else set()
+
+_combined = _preset_vars | _user_vars
+output_variables = sorted(_combined) if _combined else None
 
 run_path = data_path.joinpath('run')
 
