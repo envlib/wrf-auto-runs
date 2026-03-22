@@ -42,13 +42,26 @@ def dl_wrf(start_date, end_date):
 
     days = pendulum.interval(start_date1, end_date1).range('days')
 
+    day_count = 0
     for day in days:
         datetime_str = day.strftime(params.wps_date_format)
         include_from += f'wrfout_{domain}_{datetime_str}.nc\n'
+        day_count += 1
 
-    ## Download
+    ## Check that all required files exist on remote
     src_str = f'{name}:{wrf_path}/'
 
+    cmd_str = f'rclone lsf {src_str} --config={config_path} --max-depth 1 --files-only --include-from -'
+    cmd_list = shlex.split(cmd_str)
+    p = subprocess.run(cmd_list, input=include_from, capture_output=True, text=True, check=False)
+
+    file_list = p.stdout.split('\n')[:-1]
+
+    if len(file_list) != day_count:
+        file_list_str = '\n'.join(file_list)
+        raise ValueError(f"Expected {day_count} wrfout files on remote but found {len(file_list)}:\n{file_list_str}")
+
+    ## Download
     cmd_str = f'rclone copy {src_str} {params.data_path}/wrfout --transfers=4 --config={config_path} --include-from -'
     cmd_list = shlex.split(cmd_str)
     p = subprocess.run(cmd_list, input=include_from, capture_output=True, text=True, check=False)
