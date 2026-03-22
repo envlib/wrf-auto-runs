@@ -12,7 +12,7 @@ import pendulum
 import sentry_sdk
 
 # from download_nml_domain import dl_nml_domain
-from set_params import check_nml_params, set_nml_params, set_ndown_params
+from set_params import check_nml_params, set_nml_params, set_ndown_params, update_metgrid_levels
 from download_era5 import dl_era5
 from run_era5_to_int import run_era5_to_int
 from download_wrf import dl_wrf
@@ -105,8 +105,6 @@ ul_nml_check = upload_namelists(run_uuid)
 if ndown_check:
     print('-- ndown has been selected and the prior wrfout files will be downloaded...')
     dl_ndown_input(domains_init[0], start_date, end_date)
-else:
-    print('-- A full nested domain model will be run')
 
 if params.is_wrf_input:
     print('-- Downloading WRF data...')
@@ -123,6 +121,9 @@ else:
 
 print('-- Running metgrid.exe...')
 run_metgrid()
+
+print('-- Updating metgrid levels in namelist...')
+update_metgrid_levels()
 
 print('-- Running real.exe...')
 run_real(run_uuid)

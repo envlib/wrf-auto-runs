@@ -60,8 +60,8 @@ WRF_DOMAINS_DEFAULTS = {
     'time_step_fract_num': 0,
     'time_step_fract_den': 1,
     'p_top_requested': 5000,
-    'num_metgrid_levels': 38,
-    'num_metgrid_soil_levels': 4,
+    'num_metgrid_levels': 38,          # Placeholder -- auto-detected from met_em files before real.exe
+    'num_metgrid_soil_levels': 4,      # Placeholder -- auto-detected from met_em files before real.exe
     'feedback': 0,
     'smooth_option': 0,
 }

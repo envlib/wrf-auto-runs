@@ -40,6 +40,8 @@ def run_real(run_uuid, del_old=True):
     # cmd_list = shlex.split(cmd_str)
     p = subprocess.run(cmd_str, shell=True, capture_output=False, text=False, check=False, cwd=params.run_path)
     for path in params.data_path.glob('wrf*'):
+        if path.is_dir():
+            continue
         file_name = path.name
         path.rename(params.run_path.joinpath(file_name))
 

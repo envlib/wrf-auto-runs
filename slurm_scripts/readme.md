@@ -169,7 +169,7 @@ sinfo --format="%P %C"
 ## Completed jobs
 
 ```bash
-sacct -j <job_id> --format=JobID,MaxRSS,MaxVMSize,Elapsed  --units=G # List the peak RAM usage and elapsed time
+sacct -j <job_id> --format=JobID,Elapsed,Timelimit,TotalCPU,Alloc%2,MaxRSS,State  --units=G # List the peak RAM usage and elapsed time
 
 ```
 

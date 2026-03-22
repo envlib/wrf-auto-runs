@@ -10,8 +10,8 @@ RUN groupadd --gid 1000 appgroup && \
 
 USER appuser
 
-COPY requirements.txt .
-RUN uv pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml README.md ./
+RUN uv pip install --no-cache-dir . && rm pyproject.toml README.md
 
 RUN mkdir /data
 RUN chown -R 1000:1000 /data
@@ -21,7 +21,6 @@ COPY wrf-auto-runs/*.py .
 RUN chown 1000:1000 ./*.py
 RUN chmod -R 777 ./*.py
 
-CMD ["uv", "run", "python", "-u", "main.py"]
-# CMD ["python", "-u", "main.py"]
+CMD ["python", "-u", "main.py"]
 
 # CMD ["/bin/bash"]

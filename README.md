@@ -1,6 +1,6 @@
 # wrf-era5-auto
 
-Automated pipeline to run the WRF (Weather Research and Forecasting) model using ERA5 reanalysis data as boundary and initial conditions. All configuration is driven by a single `parameters.toml` file. Runs inside a Docker container with WRF 4.6.1-ARW and WPS 4.6.0 pre-installed.
+Automated pipeline to run the WRF (Weather Research and Forecasting) model using ERA5 reanalysis data or WRF output as boundary and initial conditions. All configuration is driven by a single `parameters.toml` file. Runs inside a Docker container with WRF 4.6.1-ARW and WPS 4.6.0 pre-installed.
 
 ## Prerequisites
 
@@ -50,7 +50,8 @@ All settings live in `parameters.toml`. See `parameters_example.toml` for a full
 ### Top-level
 
 - **`n_cores`** — Number of MPI processes for `wrf.exe` (max ~24 before efficiency drops).
-- **`output_variables`** — Optional list of wrfout variables to retain. Coordinate and auxiliary 3D variables are included automatically. Comment out to keep all variables.
+- **`output_presets`** — Optional string or list of named variable presets (e.g. `'wrf_to_int'`). Each preset expands to the set of wrfout variables required by the named tool. Variables from all selected presets are merged together.
+- **`output_variables`** — Optional list of additional wrfout variables to retain. Merged with any preset variables. Coordinate and auxiliary 3D variables are included automatically. Comment out both `output_presets` and `output_variables` to keep all variables.
 
 ### `[time_control]`
 
@@ -84,11 +85,14 @@ Direct WRF namelist passthrough sections. All keys are forwarded to their respec
 Rclone configuration for data transfer (uses rclone config syntax).
 
 - **`[remote.era5]`** — Source for ERA5 boundary-condition files.
+- **`[remote.wrf]`** — Source for WRF output files (alternative to ERA5). Includes a `domain` key to specify which domain's wrfout files to use (e.g. `d03`). When present, the pipeline downloads wrfout files and converts them to WPS intermediate format using `wrf_to_int` instead of ERA5.
 - **`[remote.output]`** — Destination for WRF output uploads.
 
 ### `[ndown]`
 
 Optional one-way nesting from a prior WRF run. Requires a single non-domain-1 domain (e.g. `run = [3]`). The `[ndown.input]` sub-section specifies the rclone remote where prior parent-domain wrfout files are stored.
+
+**ndown and output variable filtering:** `ndown.exe` requires essentially **all** wrfout variables. It calls `input_history()` which reads every registered state variable from the coarse-domain wrfout file — all 3D atmospheric fields (U, V, W, T, P, PB, PH, PHB, MU, MUB, moisture species), all surface and soil fields, vertical coordinate data, and 119 additional fields flagged for ndown interpolation in the WRF Registry (land use, urban, radiation accumulators, ocean mixed-layer, etc.). Because of this, wrfout files that have been filtered with `output_presets` or `output_variables` should not be used as ndown input — missing variables will cause ndown to fail. The pipeline already handles this correctly: wrfout files downloaded for ndown input are never filtered.
 
 ### `[sentry]`
 
@@ -127,12 +131,36 @@ Use `main_alt.py` instead to run preprocessing only (steps 1-11, no WRF executio
 5. Set time/date/output parameters and generate output file list
 6. Upload namelists to remote storage
 7. Download prior wrfout files (ndown mode only)
-8. Download ERA5 data via rclone
-9. Convert ERA5 NetCDF to WPS intermediate format
+8. Download ERA5 or WRF data via rclone
+9. Convert to WPS intermediate format (`era5_to_int` or `wrf_to_int`)
 10. Run `metgrid.exe` (horizontal interpolation)
-11. Run `real.exe` (vertical interpolation and initial/boundary conditions)
-12. Run `ndown.exe` (ndown mode only)
-13. Run `wrf.exe`, poll for completed output files, upload in real-time
+11. Auto-detect `num_metgrid_levels` from met_em files and update namelist
+12. Run `real.exe` (vertical interpolation and initial/boundary conditions)
+13. Run `ndown.exe` (ndown mode only)
+14. Run `wrf.exe`, poll for completed output files, upload in real-time
+
+## WRF Output as Boundary Conditions
+
+As an alternative to ERA5, the pipeline can use output from a prior WRF run as boundary conditions. Configure `[remote.wrf]` instead of `[remote.era5]` in `parameters.toml`:
+
+```toml
+[remote.wrf]
+type = 's3'
+provider = 'Mega'
+endpoint = 'https://s3.ca-west-1.s4.mega.io'
+access_key_id = ''
+secret_access_key = ''
+path = '/wrf-1k/output/'
+domain = 'd03'
+```
+
+When `[remote.wrf]` is present, the pipeline:
+1. Downloads wrfout files for the specified domain
+2. Reads the source wrfout's vertical structure (eta levels and P_TOP) to generate appropriate log-spaced pressure levels
+3. Converts to WPS intermediate format using `wrf_to_int` (with SST land-filling to prevent coastline interpolation artifacts)
+4. Auto-detects `num_metgrid_levels` from the resulting met_em files and updates the WRF namelist accordingly
+
+The number of pressure levels matches the source wrfout's eta level count, spaced logarithmically from 1000 hPa to P_TOP. This adapts automatically to any source WRF configuration.
 
 ## Output Files
 

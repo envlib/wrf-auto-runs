@@ -492,3 +492,26 @@ def set_ndown_params(interval_seconds):
 
     with open(params.wrf_nml_path, 'w') as nml_file:
         wrf_nml.write(nml_file)
+
+
+def update_metgrid_levels():
+    """
+    Read the first met_em file and update namelist.input with the actual
+    num_metgrid_levels and num_metgrid_soil_levels.
+    """
+    import h5netcdf
+
+    met_em_files = sorted(params.data_path.glob('met_em.d01.*.nc'))
+    if not met_em_files:
+        raise FileNotFoundError('No met_em.d01.*.nc files found after metgrid.')
+
+    with h5netcdf.File(str(met_em_files[0]), 'r') as f:
+        num_metgrid_levels = int(f.attrs['BOTTOM-TOP_GRID_DIMENSION'])
+        num_metgrid_soil_levels = int(f.attrs['NUM_METGRID_SOIL_LEVELS'])
+
+    wrf_nml = f90nml.read(params.wrf_nml_path)
+    wrf_nml['domains']['num_metgrid_levels'] = num_metgrid_levels
+    wrf_nml['domains']['num_metgrid_soil_levels'] = num_metgrid_soil_levels
+
+    with open(params.wrf_nml_path, 'w') as nml_file:
+        wrf_nml.write(nml_file)

@@ -1721,7 +1721,7 @@ requires-dist = [
     { name = "pendulum", specifier = "==3.1.0" },
     { name = "pyproj", specifier = "==3.7.2" },
     { name = "sentry-sdk", specifier = "==2.39.0" },
-    { name = "wrf-to-int", specifier = "==0.1.1" },
+    { name = "wrf-to-int", specifier = "==0.1.2" },
 ]
 
 [package.metadata.requires-dev]
@@ -1738,7 +1738,7 @@ dev = [
 
 [[package]]
 name = "wrf-to-int"
-version = "0.1.1"
+version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "h5netcdf" },
@@ -1746,9 +1746,9 @@ dependencies = [
     { name = "numpy" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4e/ff/7ddb99f2e536bb4ddae36cc8ca8cce8eb4a5885ad259b460d1ac320df547/wrf_to_int-0.1.1.tar.gz", hash = "sha256:d88e17a7c8481457e62d334de2ae035f8ceeecc96c0ad23891dd8860e28eda9c", size = 13724, upload-time = "2026-03-21T07:19:59.938Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/1c/a7d95aa4720ec69ffce111a31425566a68f00b82c0e22a3a2f648f5a1a89/wrf_to_int-0.1.2.tar.gz", hash = "sha256:a3aa2737ca66857da57960739cd13857d67cbcedd215eb2ce5ee25101fa50632", size = 14576, upload-time = "2026-03-22T01:35:53.321Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/c8/1b82e8e39ac29fd1d3933871e4c9d2c0757e0ea71db265e32cf92e58f8c3/wrf_to_int-0.1.1-py3-none-any.whl", hash = "sha256:ab222ed164bdcfbd0a841731111a5365af1984e20c1ef4f8bdb7e3a9e01f88c9", size = 14550, upload-time = "2026-03-21T07:19:58.579Z" },
+    { url = "https://files.pythonhosted.org/packages/05/c7/69052a4d4b3bf5b1f6ffb7e562a0749253f58ef734d81a04b285b15c83d5/wrf_to_int-0.1.2-py3-none-any.whl", hash = "sha256:1b7dcada1a2105849e19d2e4861ea012440f63fcfd28f3faeed0c7d92417ee65", size = 15470, upload-time = "2026-03-22T01:35:51.808Z" },
 ]
 
 [[package]]

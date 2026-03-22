@@ -4,11 +4,11 @@ WORKDIR /app
 
 # RUN uv tool install toml-cli
 
-COPY requirements.txt .
-RUN uv pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml README.md ./
+RUN uv pip install --no-cache-dir . && rm pyproject.toml README.md
 
 COPY wrf-auto-runs/*.py .
 
-CMD ["uv", "run", "python", "-u", "main.py"]
+CMD ["python", "-u", "main.py"]
 
 # CMD ["/bin/bash"]
