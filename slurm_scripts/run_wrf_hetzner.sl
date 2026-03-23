@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --partition=batch               # Updated to your local partition
 #SBATCH --time=24:00:00
-#SBATCH --ntasks=48                    # You have 96 cores/node, so this uses half a node
-#SBATCH --mem=32G                      # You have ~256GB/node, this will easily fit
+#SBATCH --ntasks=48                    # You have 48 cores/node, so this uses a full node
+#SBATCH --mem=64G                      # You have ~256GB/node, this will easily fit
 #SBATCH --hint=nomultithread
 #SBATCH --output=/shared/wrf_data/logs/wrf-era5_%j.log
 #SBATCH --error=/shared/wrf_data/logs/wrf-era5_%j.err
@@ -20,7 +20,7 @@ IMAGE_VERSION="1.1"
 SHARED_BASE="/shared/wrf_data"                                  # Your new NFS share
 SIF_PATH="${SHARED_BASE}/${IMAGE_NAME}_${IMAGE_VERSION}.sif"    # Apptainer SIF image
 WPS_GEOG_PATH="${SHARED_BASE}/WPS_GEOG"                         # Static geography data
-PARAMS_FILE="${SHARED_BASE}/parameters.toml"                    # Path to parameters.toml
+PARAMS_FILE="$(pwd)/parameters.toml"                            # Path to parameters.toml
 DATA_DIR="${SHARED_BASE}/wrf_runs/${SLURM_JOB_ID}"              # Per-job working directory
 
 # ---- Apptainer cache setup --------------------------------------------------
