@@ -6,8 +6,8 @@
 #SBATCH --ntasks=48                    # You have 48 cores/node, so this uses a full node
 #SBATCH --mem=64G                      # You have ~256GB/node, this will easily fit
 #SBATCH --hint=nomultithread
-#SBATCH --output=/shared/wrf_data/logs/wrf-era5_%j.log
-#SBATCH --error=/shared/wrf_data/logs/wrf-era5_%j.err
+#SBATCH --output=wrf-auto_%j.log
+#SBATCH --error=wrf-auto_%j.err
 
 # =============================================================================
 # WRF-ERA5 Pipeline — Apptainer on Local Cluster
