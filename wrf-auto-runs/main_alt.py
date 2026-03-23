@@ -27,6 +27,7 @@ from run_ndown import run_ndown
 from download_ndown_input import dl_ndown_input
 
 import params
+import utils
 
 run_uuid = uuid.uuid4().hex[-13:]
 
@@ -109,11 +110,17 @@ if params.is_wrf_input:
     print('-- Downloading WRF data...')
     dl_wrf(start_date, end_date)
 
+    print('-- Checking input data coverage...')
+    utils.check_input_extent('wrf', min_lon, min_lat, max_lon, max_lat)
+
     print('-- Processing WRF to WPS Int...')
     run_wrf_to_int(start_date, end_date, hour_interval, False)
 else:
     print('-- Downloading ERA5 data...')
     dl_era5(start_date, end_date)
+
+    print('-- Checking input data coverage...')
+    utils.check_input_extent('era5', min_lon, min_lat, max_lon, max_lat)
 
     print('-- Processing ERA5 to WPS Int...')
     run_era5_to_int(start_date, end_date, hour_interval, False)

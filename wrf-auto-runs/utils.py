@@ -8,6 +8,10 @@ Created on Tue Sep 23 15:03:38 2025
 import os
 import shlex
 import subprocess
+import pathlib
+
+import h5netcdf
+import numpy as np
 import pendulum
 import pyproj
 
@@ -146,6 +150,75 @@ def rename_files(files, rename_dict):
         new_files = files
 
     return new_files
+
+
+def check_input_extent(input_type, min_lon, min_lat, max_lon, max_lat):
+    """
+    Verify that input data spatially covers the WRF domain.
+
+    Reads the first available source file (ERA5 or wrfout) and compares its
+    lat/lon extent against the domain bounds from run_geogrid().
+    Raises ValueError with a clear message if coverage is insufficient.
+
+    Parameters
+    ----------
+    input_type : str
+        'era5' or 'wrf'
+    min_lon, min_lat, max_lon, max_lat : float
+        Domain bounds (0-360 longitude convention, from run_geogrid).
+    """
+    buffer = 0.5  # degrees buffer for interpolation margin
+
+    if input_type == 'era5':
+        sfc_path = params.data_path.joinpath('era5', 'e5.oper.an.sfc')
+        nc_files = sorted(sfc_path.rglob('*.nc'))
+        if not nc_files:
+            raise FileNotFoundError(f'No ERA5 sfc files found in {sfc_path}')
+
+        with h5netcdf.File(str(nc_files[0]), 'r') as f:
+            lat = np.asarray(f['latitude'][:])
+            lon = np.asarray(f['longitude'][:])
+        input_lat_min, input_lat_max = float(lat.min()), float(lat.max())
+        input_lon = np.where(lon < 0, lon + 360, lon)
+        input_lon_min, input_lon_max = float(input_lon.min()), float(input_lon.max())
+        source_desc = 'ERA5'
+
+    elif input_type == 'wrf':
+        wrfout_path = params.data_path.joinpath('wrfout')
+        nc_files = sorted(wrfout_path.glob('wrfout_*.nc'))
+        if not nc_files:
+            raise FileNotFoundError(f'No wrfout files found in {wrfout_path}')
+
+        with h5netcdf.File(str(nc_files[0]), 'r') as f:
+            lat = np.asarray(f['XLAT'][0])
+            lon = np.asarray(f['XLONG'][0])
+        input_lat_min, input_lat_max = float(lat.min()), float(lat.max())
+        input_lon = np.where(lon < 0, lon + 360, lon)
+        input_lon_min, input_lon_max = float(input_lon.min()), float(input_lon.max())
+        source_desc = 'WRF wrfout'
+
+    else:
+        raise ValueError(f"Unknown input_type: {input_type}")
+
+    # Check coverage
+    gaps = []
+    if input_lat_min > min_lat + buffer:
+        gaps.append(f'lat south of {input_lat_min:.1f} (domain needs {min_lat:.1f})')
+    if input_lat_max < max_lat - buffer:
+        gaps.append(f'lat north of {input_lat_max:.1f} (domain needs {max_lat:.1f})')
+    if input_lon_min > min_lon + buffer:
+        gaps.append(f'lon west of {input_lon_min:.1f} (domain needs {min_lon:.1f})')
+    if input_lon_max < max_lon - buffer:
+        gaps.append(f'lon east of {input_lon_max:.1f} (domain needs {max_lon:.1f})')
+
+    if gaps:
+        gap_str = '\n  - '.join(gaps)
+        raise ValueError(
+            f"{source_desc} data extent (lat {input_lat_min:.1f} to {input_lat_max:.1f}, "
+            f"lon {input_lon_min:.1f} to {input_lon_max:.1f}) does not cover the WRF domain "
+            f"(lat {min_lat:.1f} to {max_lat:.1f}, lon {min_lon:.1f} to {max_lon:.1f}).\n"
+            f"Missing coverage:\n  - {gap_str}"
+        )
 
 
 def resolve_output_variables(variables):
