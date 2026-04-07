@@ -61,7 +61,7 @@ if [ ! -f "${CSV_FILE}" ]; then
     exit 1
 fi
 
-TOTAL_ROWS=$(( $(wc -l < "${CSV_FILE}") - 1 ))
+TOTAL_ROWS=$(( $(grep -c '' "${CSV_FILE}") - 1 ))
 
 if [ "${SLURM_ARRAY_TASK_ID}" -ge "${TOTAL_ROWS}" ]; then
     echo "ERROR: SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID} exceeds CSV rows (${TOTAL_ROWS} data rows, indices 0-$((TOTAL_ROWS - 1)))"
