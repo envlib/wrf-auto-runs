@@ -124,6 +124,30 @@ def check_nml_params(domains):
     else:
         domains = list(range(1, src_n_domains + 1))
 
+    ##############################################
+    ### Validate physics configuration
+
+    physics = params.file.get('physics', {})
+    dynamics = params.file.get('dynamics', {})
+
+    bl_pbl = physics.get('bl_pbl_physics', 0)
+    if isinstance(bl_pbl, list):
+        bl_pbl = bl_pbl[0]
+
+    if bl_pbl == 0:
+        scalar_pblmix = physics.get('scalar_pblmix', 0)
+        tracer_pblmix = physics.get('tracer_pblmix', 0)
+        if scalar_pblmix == 0:
+            raise ValueError(
+                'bl_pbl_physics=0 requires scalar_pblmix=1. '
+                'Without it, scalars will not be vertically mixed.'
+            )
+        if dynamics.get('tracer_opt', 0) > 0 and tracer_pblmix == 0:
+            raise ValueError(
+                'bl_pbl_physics=0 with tracer_opt>0 requires tracer_pblmix=1. '
+                'Without it, tracers will not be vertically mixed.'
+            )
+
     return src_n_domains, domains
 
 

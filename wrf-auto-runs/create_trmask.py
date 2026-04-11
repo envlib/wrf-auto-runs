@@ -5,6 +5,9 @@ Generate WRF-WVT tracer mask files (trmask_d<domain>) from geo_em files.
 
 Called automatically by main.py when tracer_opt=4 is set in the [dynamics]
 section of parameters.toml. Configuration comes from the [wvt] section.
+
+Generates TRMASK (2D) when tracer2dsource=1 and/or TRMASK3D (3D) when
+tracer3dsource=1. Both variables can coexist in the same file.
 """
 import numpy as np
 import scipy.io.netcdf as nc3
@@ -26,8 +29,26 @@ def create_trmask(domains, start_date):
         Simulation start date in 'YYYY-MM-DD HH:MM:SS' format.
     """
     wvt_config = params.file.get('wvt', {})
+    dynamics = params.file.get('dynamics', {})
     mask_type = wvt_config.get('mask_type', 'land')
     relax_width = wvt_config.get('relax_width', 5)
+
+    do_2d = dynamics.get('tracer2dsource', 0) == 1
+    do_3d = dynamics.get('tracer3dsource', 0) == 1
+
+    if not do_2d and not do_3d:
+        print('   WARNING: tracer_opt=4 but neither tracer2dsource nor tracer3dsource is enabled')
+        return
+
+    # Get e_vert for 3D mask vertical dimension
+    e_vert = None
+    if do_3d:
+        e_vert_raw = params.file['domains'].get('e_vert', 33)
+        if isinstance(e_vert_raw, list):
+            e_vert = e_vert_raw[0]
+        else:
+            e_vert = e_vert_raw
+        n_vert = e_vert - 1  # full levels = stagger points - 1
 
     # bbox parameters (only used when mask_type == 'bbox')
     min_lat = wvt_config.get('min_lat')
@@ -64,7 +85,7 @@ def create_trmask(domains, start_date):
 
         sn, we = lat.shape
 
-        # Build the mask
+        # Build the 2D mask
         if mask_type == 'land':
             mask = landmask.copy()
         elif mask_type == 'ocean':
@@ -88,12 +109,19 @@ def create_trmask(domains, start_date):
             mask[:, -relax_width:] = 0
 
         # Write trmask NetCDF file
-        _write_trmask(trmask_path, lat, lon, mask, times_str, mminlu, num_land_cat)
+        _write_trmask(trmask_path, lat, lon, mask, times_str, mminlu, num_land_cat,
+                      do_2d=do_2d, do_3d=do_3d, n_vert=n_vert if do_3d else None)
 
-        print(f'   Created {trmask_path.name} ({mask_type} mask, {we}x{sn}, relax_width={relax_width})')
+        parts = []
+        if do_2d:
+            parts.append('TRMASK')
+        if do_3d:
+            parts.append(f'TRMASK3D ({n_vert} levels)')
+        print(f'   Created {trmask_path.name} ({mask_type} mask, {we}x{sn}, relax_width={relax_width}, vars: {", ".join(parts)})')
 
 
-def _write_trmask(path, lat, lon, mask, times_str, mminlu, num_land_cat):
+def _write_trmask(path, lat, lon, mask, times_str, mminlu, num_land_cat,
+                  do_2d=True, do_3d=False, n_vert=None):
     """Write a trmask NetCDF3 classic file in the format WRF expects."""
     sn, we = lat.shape
 
@@ -104,6 +132,8 @@ def _write_trmask(path, lat, lon, mask, times_str, mminlu, num_land_cat):
     f.createDimension('south_north', sn)
     f.createDimension('west_east', we)
     f.createDimension('DateStrLen', len(times_str))
+    if do_3d:
+        f.createDimension('bottom_top', n_vert)
 
     # XLAT
     v = f.createVariable('XLAT', 'f4', ('south_north', 'west_east'))
@@ -123,15 +153,28 @@ def _write_trmask(path, lat, lon, mask, times_str, mminlu, num_land_cat):
     v.units = 'degree_east'
     v.stagger = ''
 
-    # TRMASK
-    v = f.createVariable('TRMASK', 'f4', ('Time', 'south_north', 'west_east'))
-    v[0, :, :] = mask.astype(np.float32)
-    v.FieldType = np.int32(104)
-    v.MemoryOrder = 'XY'
-    v.description = 'Tracer Source Mask (1 FOR SOURCE)'
-    v.units = ''
-    v.stagger = ''
-    v.coordinates = 'XLONG XLAT'
+    # TRMASK (2D source mask)
+    if do_2d:
+        v = f.createVariable('TRMASK', 'f4', ('Time', 'south_north', 'west_east'))
+        v[0, :, :] = mask.astype(np.float32)
+        v.FieldType = np.int32(104)
+        v.MemoryOrder = 'XY'
+        v.description = 'Tracer Source Mask (1 FOR SOURCE)'
+        v.units = ''
+        v.stagger = ''
+        v.coordinates = 'XLONG XLAT'
+
+    # TRMASK3D (3D source mask -- 2D mask extruded to all vertical levels)
+    if do_3d:
+        v = f.createVariable('TRMASK3D', 'f4', ('Time', 'bottom_top', 'south_north', 'west_east'))
+        mask_3d = np.tile(mask.astype(np.float32)[np.newaxis, :, :], (n_vert, 1, 1))
+        v[0, :, :, :] = mask_3d
+        v.FieldType = np.int32(104)
+        v.MemoryOrder = 'XYZ'
+        v.description = '3D SOURCE MASK FOR MOISTURE TRACERS'
+        v.units = ''
+        v.stagger = ''
+        v.coordinates = 'XLONG XLAT'
 
     # Times
     v = f.createVariable('Times', 'S1', ('Time', 'DateStrLen'))

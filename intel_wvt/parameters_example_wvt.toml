@@ -83,19 +83,24 @@ feedback = 0
 # Physics -- WVT REQUIRED SETTINGS
 #
 # WRF-WVT requires specific physics schemes:
-#   mp_physics = 6       WSM6 microphysics (tracer version: wsm6_tr)
-#   bl_pbl_physics = 1   YSU PBL scheme (tracer version: ysu_tr)
-#   cu_physics = 1       Kain-Fritsch cumulus (tracer version: kfeta_tr)
-#                        Set cu_physics = 0 on convection-resolving domains (dx < ~4 km)
-#   scalar_pblmix = 0    Prevent double scalar turbulent diffusion
-#   tracer_pblmix = 0    Prevent double tracer turbulent diffusion
-#   sf_sfclay_physics = 1  Required by YSU PBL
+#   mp_physics = 6       WSM6 microphysics
+#   bl_pbl_physics = 1   YSU PBL scheme
+#              = 0       No PBL (use with km_opt=5 SMS-3DTKE, requires scalar_pblmix=1, tracer_pblmix=1)
+#   cu_physics = 1       Kain-Fritsch cumulus
+#              = 11      Multi-scale Kain-Fritsch (scale-aware)
+#              = 16      New Tiedtke
+#              = 0       No cumulus (convection-resolving, dx < ~4 km)
+#   scalar_pblmix = 0    With YSU PBL (prevent double mixing)
+#                 = 1    With bl_pbl_physics=0 (diffusion module handles mixing)
+#   tracer_pblmix = 0    With YSU PBL (prevent double mixing)
+#                 = 1    With bl_pbl_physics=0 (diffusion module handles mixing)
+#   sf_sfclay_physics = 1  Required by YSU PBL (also needed with SMS-3DTKE)
 # =============================================================================
 
 [physics]
 mp_physics = 6
 bl_pbl_physics = 1
-cu_physics = [1, 1, 1, 0, 0, 0]
+cu_physics = [11, 11, 11, 0, 0, 0]
 sf_sfclay_physics = 1
 scalar_pblmix = 0
 tracer_pblmix = 0
