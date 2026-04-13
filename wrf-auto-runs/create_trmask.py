@@ -127,68 +127,64 @@ def create_trmask(domains, start_date):
 
 def _write_trmask(path, lat, lon, mask, times_str, mminlu, num_land_cat,
                   do_2d=True, do_3d=False, n_vert=None):
-    """Write a trmask NetCDF3 classic file in the format WRF expects."""
+    """Write a trmask NetCDF-4 file in the format WRF expects."""
     sn, we = lat.shape
 
-    f = nc3.netcdf_file(str(path), 'w', version=1)
+    with h5netcdf.File(str(path), 'w') as f:
+        # Dimensions
+        f.dimensions['Time'] = 1
+        f.dimensions['south_north'] = sn
+        f.dimensions['west_east'] = we
+        f.dimensions['DateStrLen'] = 19
+        if do_3d:
+            f.dimensions['bottom_top'] = n_vert
 
-    # Dimensions
-    f.createDimension('Time', None)  # unlimited
-    f.createDimension('south_north', sn)
-    f.createDimension('west_east', we)
-    f.createDimension('DateStrLen', len(times_str))
-    if do_3d:
-        f.createDimension('bottom_top', n_vert)
+        # XLAT
+        v = f.create_variable('XLAT', ('south_north', 'west_east'), data=lat.astype(np.float32))
+        v.attrs['FieldType'] = np.int32(104)
+        v.attrs['MemoryOrder'] = np.bytes_('XY ')
+        v.attrs['description'] = np.bytes_('LATITUDE SOUTH IS NEGATIVE')
+        v.attrs['units'] = np.bytes_('degree_north')
+        v.attrs['stagger'] = np.bytes_('')
 
-    # XLAT
-    v = f.createVariable('XLAT', 'f4', ('south_north', 'west_east'))
-    v[:] = lat.astype(np.float32)
-    v.FieldType = np.int32(104)
-    v.MemoryOrder = 'XY '
-    v.description = 'LATITUDE SOUTH IS NEGATIVE'
-    v.units = 'degree_north'
-    v.stagger = ''
+        # XLONG
+        v = f.create_variable('XLONG', ('south_north', 'west_east'), data=lon.astype(np.float32))
+        v.attrs['FieldType'] = np.int32(104)
+        v.attrs['MemoryOrder'] = np.bytes_('XY ')
+        v.attrs['description'] = np.bytes_('LONGITUDE WEST IS NEGATIVE')
+        v.attrs['units'] = np.bytes_('degree_east')
+        v.attrs['stagger'] = np.bytes_('')
 
-    # XLONG
-    v = f.createVariable('XLONG', 'f4', ('south_north', 'west_east'))
-    v[:] = lon.astype(np.float32)
-    v.FieldType = np.int32(104)
-    v.MemoryOrder = 'XY '
-    v.description = 'LONGITUDE WEST IS NEGATIVE'
-    v.units = 'degree_east'
-    v.stagger = ''
+        # TRMASK (2D source mask)
+        if do_2d:
+            mask_2d = mask[np.newaxis, :, :].astype(np.float32)
+            v = f.create_variable('TRMASK', ('Time', 'south_north', 'west_east'), data=mask_2d)
+            v.attrs['FieldType'] = np.int32(104)
+            v.attrs['MemoryOrder'] = np.bytes_('XY')
+            v.attrs['description'] = np.bytes_('Tracer Source Mask (1 FOR SOURCE)')
+            v.attrs['units'] = np.bytes_('')
+            v.attrs['stagger'] = np.bytes_('')
+            v.attrs['coordinates'] = np.bytes_('XLONG XLAT')
 
-    # TRMASK (2D source mask)
-    if do_2d:
-        v = f.createVariable('TRMASK', 'f4', ('Time', 'south_north', 'west_east'))
-        v[0, :, :] = mask.astype(np.float32)
-        v.FieldType = np.int32(104)
-        v.MemoryOrder = 'XY'
-        v.description = 'Tracer Source Mask (1 FOR SOURCE)'
-        v.units = ''
-        v.stagger = ''
-        v.coordinates = 'XLONG XLAT'
+        # TRMASK3D (3D source mask -- 2D mask extruded to all vertical levels)
+        if do_3d:
+            mask_3d = np.tile(mask.astype(np.float32)[np.newaxis, np.newaxis, :, :], (1, n_vert, 1, 1))
+            v = f.create_variable('TRMASK3D', ('Time', 'bottom_top', 'south_north', 'west_east'), data=mask_3d)
+            v.attrs['FieldType'] = np.int32(104)
+            v.attrs['MemoryOrder'] = np.bytes_('XYZ')
+            v.attrs['description'] = np.bytes_('3D SOURCE MASK FOR MOISTURE TRACERS')
+            v.attrs['units'] = np.bytes_('')
+            v.attrs['stagger'] = np.bytes_('')
+            v.attrs['coordinates'] = np.bytes_('XLONG XLAT')
 
-    # TRMASK3D (3D source mask -- 2D mask extruded to all vertical levels)
-    if do_3d:
-        v = f.createVariable('TRMASK3D', 'f4', ('Time', 'bottom_top', 'south_north', 'west_east'))
-        mask_3d = np.tile(mask.astype(np.float32)[np.newaxis, :, :], (n_vert, 1, 1))
-        v[0, :, :, :] = mask_3d
-        v.FieldType = np.int32(104)
-        v.MemoryOrder = 'XYZ'
-        v.description = '3D SOURCE MASK FOR MOISTURE TRACERS'
-        v.units = ''
-        v.stagger = ''
-        v.coordinates = 'XLONG XLAT'
+        # Times as fixed-length char array
+        times_data = np.array([[c for c in times_str[:19].ljust(19)]], dtype='S1')
+        f.create_variable('Times', ('Time', 'DateStrLen'), data=times_data)
 
-    # Times
-    v = f.createVariable('Times', 'S1', ('Time', 'DateStrLen'))
-    v[0, :] = np.array([c for c in times_str], dtype='S1')
-
-    # Global attributes
-    f.TITLE = 'OUTPUT FROM WVT TRACER MASK GENERATOR V4.0'
-    f.START_DATE = times_str
-    f.MMINLU = mminlu
-    f.NUM_LAND_CAT = np.int32(num_land_cat)
-
-    f.close()
+        # Global attributes
+        # Use np.bytes_ for fixed-length char attrs (not variable-length string)
+        # WRF's V4 check requires char-type TITLE containing ' V4.'
+        f.attrs['TITLE'] = np.bytes_('OUTPUT FROM WVT TRACER MASK GENERATOR V4.0')
+        f.attrs['START_DATE'] = np.bytes_(times_str)
+        f.attrs['MMINLU'] = np.bytes_(mminlu)
+        f.attrs['NUM_LAND_CAT'] = np.int32(num_land_cat)
