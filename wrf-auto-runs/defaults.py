@@ -232,6 +232,9 @@ DYNAMICS_PER_DOMAIN_FIELDS = {
     'zdamp', 'dampcoef', 'khdif', 'kvdif',
     'non_hydrostatic', 'moist_adv_opt', 'scalar_adv_opt',
     'gwd_opt', 'epssm',
+    # WVT: must be broadcast to all domains to prevent tracer array size mismatch
+    # during nested boundary forcing (d01 tracer array size must match d02)
+    'tracer_opt', 'tracer_adv_opt', 'tracer2dsource', 'tracer3dsource', 'tracer3dsink',
 }
 
 # ============================================================

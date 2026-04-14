@@ -13,7 +13,7 @@ n_cores = 8
 # If any 3D atmospheric variable is listed (e.g. T, U, V, QVAPOR), auxiliary variables
 # needed for post-processing (P, PB, PH, PHB, HGT) are also included automatically.
 # Comment out both output_presets and output_variables to retain all variables.
-# output_variables = ['T2', 'Q2', 'PSFC', 'U10', 'V10', 'TSK', 'SWDOWN', 'GLW', 'OLR', 'ALBEDO', 'EMISS', 'HFX', 'LH', 'GRDFLX', 'SST', 'RECH', 'PREC_ACC_C', 'PREC_ACC_NC', 'QFX', 'SMOIS', 'TSLB', 'CANWAT', 'SFROFF', 'UDROFF', 'SNOW_ACC_NC']
+# output_variables = ['T2', 'Q2', 'PSFC', 'U10', 'V10', 'TSK', 'SWDOWN', 'GLW', 'OLR', 'ALBEDO', 'EMISS', 'HFX', 'LH', 'GRDFLX', 'SST', 'RECH', 'PREC_ACC_C', 'PREC_ACC_NC', 'QFX', 'SMOIS', 'TSLB', 'CANWAT', 'SFROFF', 'UDROFF', 'SNOW_ACC_NC', 'UST', 'ZNT', 'RMOL']
 
 # =============================================================================
 # Local (non-Docker) mode -- uncomment to run outside the Docker container.
