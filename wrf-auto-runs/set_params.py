@@ -292,16 +292,15 @@ def set_nml_params(domains=None):
     apply_overrides(wrf_tc, tc_overrides, domains, old_n_domains)
 
     ## WVT: auto-inject auxinput8 settings when tracer_opt=4
-    ## TRMASK is read via WRF's i8 registry flag + alarm-based I/O.
-    ## No manual read code in mediation_wrfmain.F -- it corrupts I/O state.
-    ## The trmask file must be NetCDF-4 format with correct Times variable.
-    if dynamics.get('tracer_opt', 0) == 4:
-        duration_h = params.file['time_control'].get('duration_hours', 24)
+    ## TRMASK is read via manual open/input/close in mediation_wrfmain.F.
+    ## Only io_form and inname are needed -- interval/begin/end alarm settings
+    ## interfere with the manual read and must NOT be set.
+    tracer_opt_val = dynamics.get('tracer_opt', 0)
+    if isinstance(tracer_opt_val, list):
+        tracer_opt_val = tracer_opt_val[0]
+    if tracer_opt_val == 4:
         wrf_tc.setdefault('io_form_auxinput8', 2)
         wrf_tc.setdefault('auxinput8_inname', 'trmask_d<domain>')
-        wrf_tc.setdefault('auxinput8_interval_m', [duration_h * 60] * n_domains)
-        wrf_tc.setdefault('auxinput8_begin_m', [0] * n_domains)
-        wrf_tc.setdefault('auxinput8_end_m', [0] * n_domains)
 
     ## Direct WRF namelist sections from TOML
     override_sections = {
