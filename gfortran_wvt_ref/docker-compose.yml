@@ -1,6 +1,6 @@
 services:
   wrf-runs:
-    image: mullenkamp/wrf-auto-runs-wvt-ref:1.0
+    image: mullenkamp/wrf-auto-runs-wvt-ref:1.1
     shm_size: '1gb'
     volumes:
         - "./parameters.toml:/app/parameters.toml"

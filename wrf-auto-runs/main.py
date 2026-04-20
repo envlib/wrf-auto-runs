@@ -15,6 +15,7 @@ import sentry_sdk
 from set_params import check_nml_params, set_nml_params, set_ndown_params, update_metgrid_levels
 from download_era5 import dl_era5
 from run_era5_to_int import run_era5_to_int
+from process_sst_surftemp import process_sst_surftemp
 from download_wrf import dl_wrf
 from run_wrf_to_int import run_wrf_to_int
 from run_metgrid import run_metgrid
@@ -123,13 +124,18 @@ if params.is_wrf_input:
     run_wrf_to_int(start_date, end_date, hour_interval)
 else:
     print('-- Downloading ERA5 data...')
-    dl_era5(start_date, end_date)
+    dl_era5(start_date, end_date, min_lon, min_lat, max_lon, max_lat)
 
     print('-- Checking input data coverage...')
     utils.check_input_extent('era5', min_lon, min_lat, max_lon, max_lat)
 
     print('-- Processing ERA5 to WPS Int...')
     run_era5_to_int(start_date, end_date, hour_interval)
+
+    if params.sst_source == 'surftemp':
+        print('-- Processing surftemp SST to WPS Int...')
+        process_sst_surftemp(start_date, end_date, hour_interval,
+                             min_lon, min_lat, max_lon, max_lat)
 
 print('-- Running metgrid.exe...')
 run_metgrid()

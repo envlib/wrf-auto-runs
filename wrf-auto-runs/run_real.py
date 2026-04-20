@@ -56,7 +56,7 @@ def run_real(run_uuid, del_old=True):
 
     ## Run real.exe
     resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
-    cmd_str = f'mpirun -n 1 {params.real_exe}'
+    cmd_str = f'mpirun -n 4 {params.real_exe}'
     cmd_list = shlex.split(cmd_str)
     p = subprocess.run(cmd_list, capture_output=False, text=False, check=False, cwd=params.run_path)
 

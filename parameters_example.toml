@@ -205,6 +205,21 @@ feedback = 0                            # One-way (0) or two-way (1) nesting
 # path = '/wrf-1k/output/d03'             # Path to prior parent-domain wrfout files
 
 # =============================================================================
+# SST source -- which dataset provides sea surface temperature and sea ice.
+# 'era5' (default): SST and SEAICE are taken from the ERA5 surface stream
+#                   (bundled with the ERA5 download, no extra deps).
+# 'surftemp': SST and SEAICE are taken from the CCI SST v2.1 L4 product on the
+#             AWS Open Data Registry (s3://surftemp-sst/data/sst.zarr).
+#             0.05-degree daily, global, anonymous read, late-1981 to present.
+#             When selected, the ERA5 SST and sea-ice files are skipped during
+#             download and skipped by era5_to_int, and a separate SST:* WPS
+#             intermediate file is written from the surftemp zarr.
+# =============================================================================
+
+# [sst]
+# source = 'era5'
+
+# =============================================================================
 # Remote storage -- rclone configuration for data downloads and output uploads.
 # All sections use rclone config syntax (type, provider, endpoint, credentials).
 # Configure either [remote.era5] OR [remote.wrf] as boundary condition input

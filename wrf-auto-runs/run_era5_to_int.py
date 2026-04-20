@@ -30,6 +30,8 @@ def run_era5_to_int(start_date, end_date, hour_interval, del_old=True):
     era5_path = params.data_path.joinpath('era5')
 
     cmd_str = f'era5_to_int -h {hour_interval} {era5_path} "{start_date}" "{end_date}"'
+    if params.sst_source == 'surftemp':
+        cmd_str += ' --skip-vars SST,SEAICE'
     cmd_list = shlex.split(cmd_str)
     p = subprocess.run(cmd_list, capture_output=True, text=True, check=False, cwd=params.data_path)
 

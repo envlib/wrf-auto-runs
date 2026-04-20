@@ -37,6 +37,8 @@ def run_metgrid(del_old=True):
                 path.unlink()
             for path in params.data_path.glob('WRF:*'):
                 path.unlink()
+            for path in params.data_path.glob('SST:*'):
+                path.unlink()
         return True
     else:
         if params.is_sentry:
