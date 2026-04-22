@@ -5,7 +5,7 @@ Download ERA5 data via the era5_dl CLI (era5-s3-dl package).
 
 Translates wrf-auto-runs' [remote.era5] config into era5_dl's [source] TOML,
 points [remote] at the local /data/era5 directory, and invokes era5_dl with
-the right preset, date range, bbox, and (when sst_source == 'surftemp') the
+the right preset, date range, bbox, and (when sst_source == 'cci') the
 --skip-vars SSTK,CI flag.
 """
 import copy
@@ -62,7 +62,7 @@ def dl_era5(start_date, end_date, min_lon, min_lat, max_lon, max_lat):
         '--no-check-target',
         '-n', '4',
     ]
-    if params.sst_source == 'surftemp':
+    if params.sst_source == 'cci':
         cmd_parts += ['--skip-vars', 'sstk,ci']
 
     p = subprocess.run(cmd_parts, capture_output=True, text=True, check=False)

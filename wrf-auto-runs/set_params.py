@@ -211,7 +211,7 @@ def set_nml_params(domains=None):
         wps_metgrid['fg_name'] = str(data_path.joinpath('WRF'))
     else:
         fg_names = [str(data_path.joinpath('ERA5'))]
-        if params.sst_source == 'surftemp':
+        if params.sst_source == 'cci':
             fg_names.append(str(data_path.joinpath('SST')))
         wps_metgrid['fg_name'] = fg_names if len(fg_names) > 1 else fg_names[0]
     wps_metgrid['opt_metgrid_tbl_path'] = str(params.metgrid_exe.parent.joinpath('metgrid'))

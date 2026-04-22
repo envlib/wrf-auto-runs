@@ -15,7 +15,7 @@ import sentry_sdk
 from set_params import check_nml_params, set_nml_params, set_ndown_params, update_metgrid_levels
 from download_era5 import dl_era5
 from run_era5_to_int import run_era5_to_int
-from process_sst_surftemp import process_sst_surftemp
+from process_sst_cci import process_sst_cci
 from download_wrf import dl_wrf
 from run_wrf_to_int import run_wrf_to_int
 from run_metgrid import run_metgrid
@@ -132,10 +132,10 @@ else:
     print('-- Processing ERA5 to WPS Int...')
     run_era5_to_int(start_date, end_date, hour_interval)
 
-    if params.sst_source == 'surftemp':
-        print('-- Processing surftemp SST to WPS Int...')
-        process_sst_surftemp(start_date, end_date, hour_interval,
-                             min_lon, min_lat, max_lon, max_lat)
+    if params.sst_source == 'cci':
+        print('-- Processing CCI SST to WPS Int...')
+        process_sst_cci(start_date, end_date, hour_interval,
+                        min_lon, min_lat, max_lon, max_lat)
 
 print('-- Running metgrid.exe...')
 run_metgrid()

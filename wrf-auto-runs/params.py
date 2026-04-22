@@ -80,8 +80,10 @@ is_remote_output = 'remote' in file and 'output' in file.get('remote', {})
 is_wrf_input = 'remote' in file and 'wrf' in file.get('remote', {})
 
 sst_source = file.get('sst', {}).get('source', 'era5')
-if sst_source not in ('era5', 'surftemp'):
-    raise ValueError(f"[sst].source must be 'era5' or 'surftemp', got {sst_source!r}")
+if sst_source not in ('era5', 'cci'):
+    raise ValueError(f"[sst].source must be 'era5' or 'cci', got {sst_source!r}")
+if sst_source == 'cci' and 'sst' not in file.get('remote', {}):
+    raise ValueError("[sst].source = 'cci' requires a [remote.sst] section pointing at the CCI SST mirror.")
 
 if not data_path.exists():
     data_path.mkdir(exist_ok=True)

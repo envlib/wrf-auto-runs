@@ -55,14 +55,28 @@ def create_trmask(domains, start_date):
             e_vert = e_vert_raw
         n_vert = e_vert - 1  # full levels = stagger points - 1
 
-    # bbox parameters (only used when mask_type == 'bbox')
-    min_lat = wvt_config.get('min_lat')
-    max_lat = wvt_config.get('max_lat')
-    min_lon = wvt_config.get('min_lon')
-    max_lon = wvt_config.get('max_lon')
+    # Validate mask_type up-front, before any file I/O
+    if mask_type == 'bbox':
+        raise ValueError(
+            '[wvt] mask_type = "bbox" is no longer supported. '
+            'Use mask_type = "all" together with min_lat/max_lat/min_lon/max_lon.'
+        )
+    if mask_type not in ('land', 'ocean', 'all'):
+        raise ValueError(f'Unknown mask_type: {mask_type}. Use land, ocean, or all.')
 
-    if mask_type == 'bbox' and any(v is None for v in (min_lat, max_lat, min_lon, max_lon)):
-        raise ValueError('[wvt] mask_type = "bbox" requires min_lat, max_lat, min_lon, max_lon')
+    # Optional bbox restriction applied on top of mask_type. All four bounds
+    # must be provided together; partial bounds raise an error.
+    bbox_keys = ('min_lat', 'max_lat', 'min_lon', 'max_lon')
+    bbox_values = {k: wvt_config.get(k) for k in bbox_keys}
+    bbox_present = [k for k, v in bbox_values.items() if v is not None]
+    bbox_missing = [k for k, v in bbox_values.items() if v is None]
+    if bbox_present and bbox_missing:
+        raise ValueError(f'[wvt] bbox requires all of {list(bbox_keys)} together; missing: {bbox_missing}')
+    has_bbox = len(bbox_present) == 4
+    min_lat = bbox_values['min_lat']
+    max_lat = bbox_values['max_lat']
+    min_lon = bbox_values['min_lon']
+    max_lon = bbox_values['max_lon']
 
     # Format the Times string as WRF expects: "YYYY-MM-DD_HH:MM:SS"
     if hasattr(start_date, 'format'):
@@ -90,21 +104,18 @@ def create_trmask(domains, start_date):
 
         sn, we = lat.shape
 
-        # Build the 2D mask
+        # Build the 2D mask from mask_type (validated above)
         if mask_type == 'land':
             mask = landmask.copy()
         elif mask_type == 'ocean':
             mask = 1.0 - landmask
-        elif mask_type == 'bbox':
-            mask = np.where(
-                (lat >= min_lat) & (lat <= max_lat) &
-                (lon >= min_lon) & (lon <= max_lon),
-                1.0, 0.0
-            )
-        elif mask_type == 'all':
+        else:  # 'all'
             mask = np.ones_like(lat)
-        else:
-            raise ValueError(f'Unknown mask_type: {mask_type}. Use land, ocean, bbox, or all.')
+
+        # Apply optional bbox restriction on top of the mask_type selection
+        if has_bbox:
+            bbox_mask = np.where((lat >= min_lat) & (lat <= max_lat) & (lon >= min_lon) & (lon <= max_lon), 1.0, 0.0)
+            mask = mask * bbox_mask
 
         # Zero out relaxation zone
         if relax_width > 0:
@@ -122,7 +133,13 @@ def create_trmask(domains, start_date):
             parts.append('TRMASK')
         if do_3d:
             parts.append(f'TRMASK3D ({n_vert} levels)')
-        print(f'   Created {trmask_path.name} ({mask_type} mask, {we}x{sn}, relax_width={relax_width}, vars: {", ".join(parts)})')
+        bbox_note = ''
+        if has_bbox:
+            bbox_note = f', bbox=lat[{min_lat},{max_lat}] lon[{min_lon},{max_lon}]'
+        print(
+            f'   Created {trmask_path.name} ({mask_type} mask{bbox_note}, '
+            f'{we}x{sn}, relax_width={relax_width}, vars: {", ".join(parts)})'
+        )
 
 
 def _write_trmask(path, lat, lon, mask, times_str, mminlu, num_land_cat,

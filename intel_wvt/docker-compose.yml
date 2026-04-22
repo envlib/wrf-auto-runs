@@ -2,7 +2,8 @@ version: '3.3'
 
 services:
   wrf-runs:
-    image: mullenkamp/wrf-auto-runs-intel-wvt:1.1
+    build: .
+    image: mullenkamp/wrf-auto-runs-intel-wvt:1.2
     shm_size: '1gb'
     volumes:
         - "./parameters.toml:/app/parameters.toml"

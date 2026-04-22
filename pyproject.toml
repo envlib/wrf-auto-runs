@@ -33,9 +33,6 @@ dependencies = [
   'sentry-sdk==2.39.0',
   'pyproj==3.7.1',
   'h5netcdf==1.6.3',
-  'xarray',
-  'zarr',
-  's3fs',
   ]
 
 [dependency-groups]

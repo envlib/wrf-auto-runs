@@ -133,8 +133,13 @@ tracer3dsink = 0
 # mask_type options:
 #   "land"   - All land points (from LANDMASK in geo_em). Default.
 #   "ocean"  - All ocean points (inverse of LANDMASK)
-#   "bbox"   - Points within a lat/lon bounding box (requires min/max lat/lon)
 #   "all"    - Entire domain (all grid points = source)
+#
+# Optional bbox restriction: min_lat, max_lat, min_lon, max_lon. If all four
+#   are set, the mask is further restricted to grid points inside the bbox
+#   (intersected with the mask_type selection). Setting mask_type = "all"
+#   plus a bbox is equivalent to a bbox-only mask. All four bounds must be
+#   provided together -- partial bounds raise an error.
 #
 # relax_width: number of grid points at domain edges set to 0 (WRF relaxation
 #   zone -- tracers are not conserved there). Defaults to spec_bdy_width from
@@ -142,9 +147,9 @@ tracer3dsink = 0
 # =============================================================================
 
 [wvt]
-mask_type = "land"
+mask_type = "ocean"
 # relax_width = 5  # defaults to spec_bdy_width, usually no need to set explicitly
-# For bbox mask_type, uncomment and set these:
+# Optional bbox restriction (all four must be set together):
 # min_lat = -42.0
 # max_lat = -38.0
 # min_lon = 168.0
