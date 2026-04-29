@@ -507,7 +507,7 @@ wheels = [
 
 [[package]]
 name = "era5-s3-dl"
-version = "0.2.0"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pendulum" },
@@ -515,9 +515,9 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/96/d2/65b331ab0671a4e3ba29ff79d722290c50df68d67666e3ef37d22ab5c2ac/era5_s3_dl-0.2.0.tar.gz", hash = "sha256:4d43d0f77e6f61f71bb4490b70020ec4913eb83fa48ee5dbbc705925ec04560f", size = 17206, upload-time = "2026-04-20T22:36:29.336Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/26/e4c22146ec3c9cebf2cd4b0498d7a7748a6d5576964d5ecbf497cee1207f/era5_s3_dl-0.2.1.tar.gz", hash = "sha256:d4ce477f3a1199866c530e4210afac62a57919d4089f20f1025e08ec55693635", size = 17199, upload-time = "2026-04-29T23:35:04.957Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ac/85/a2e8f07eb1ce77360cf15a44f7e7f8c561a004a3d5c7916dc5a3220f5fb6/era5_s3_dl-0.2.0-py3-none-any.whl", hash = "sha256:d464e255d855842baa0a7f7d0be18b30cdb3163230cfabc43c517840d5116d23", size = 16376, upload-time = "2026-04-20T22:36:27.871Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/2f/a6cd106cfecd5a586980500f4f20f8fad7b3872bc968c9cc24edc7dcbc5b/era5_s3_dl-0.2.1-py3-none-any.whl", hash = "sha256:842fcb68f13e24791e5bef1b75e5676018387534e544a868f2594884ee3d75dd", size = 16369, upload-time = "2026-04-29T23:35:03.314Z" },
 ]
 
 [[package]]
@@ -2061,7 +2061,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "era5-s3-dl", specifier = "==0.2.0" },
+    { name = "era5-s3-dl", specifier = "==0.2.1" },
     { name = "era5-to-int", specifier = "==0.4.0" },
     { name = "f90nml", specifier = "==1.4.5" },
     { name = "h5netcdf", specifier = "==1.6.3" },
