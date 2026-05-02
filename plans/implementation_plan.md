@@ -17,7 +17,6 @@ Currently users must maintain 3 files: `parameters.toml`, `namelist.wps`, and `n
 | `set_params.py` | Rewrite to build namelists from scratch using defaults + TOML overrides |
 | `check_ndown.py` | Read domain config from `params.file['domains']` instead of `f90nml.read()` |
 | `main.py` | Minor cleanup — domain parsing unchanged |
-| `main_alt.py` | Same minor cleanup as `main.py` |
 
 ## New Files
 
@@ -735,7 +734,7 @@ Remove `import f90nml`.
 
 ---
 
-## Step 6: Update `main.py` and `main_alt.py`
+## Step 6: Update `main.py`
 
 Minimal changes. The domain parsing logic (lines 63-74) stays since it validates the top-level `domains` parameter. No structural changes needed — `check_nml_params()` and `set_nml_params()` have the same signatures and return values.
 
