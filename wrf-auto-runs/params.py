@@ -79,6 +79,8 @@ is_sentry = 'sentry' in file
 is_remote_output = 'remote' in file and 'output' in file.get('remote', {})
 is_wrf_input = 'remote' in file and 'wrf' in file.get('remote', {})
 
+preprocess_only = file.get('preprocess_only', False)
+
 sst_source = file.get('sst', {}).get('source', 'era5')
 if sst_source not in ('era5', 'cci'):
     raise ValueError(f"[sst].source must be 'era5' or 'cci', got {sst_source!r}")

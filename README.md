@@ -120,7 +120,7 @@ Then run:
 uv run wrf-era5-auto/main.py
 ```
 
-Use `main_alt.py` instead to run preprocessing only (steps 1-11, no WRF execution).
+Set `preprocess_only = true` in `parameters.toml` to run preprocessing only (steps 1-11) and preserve all intermediate files; `wrf.exe` is skipped.
 
 ## Pipeline Steps
 

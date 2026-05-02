@@ -2,6 +2,11 @@
 # Don't use any more than 24 cores. Efficiency drops significantly past 24 cores.
 n_cores = 8
 
+# Preprocessing-only mode. When true, runs every step up through real.exe / ndown.exe,
+# preserves all intermediate files (era5/, wrf/, met_em*, ERA5:*, WRF:*, SST:* etc.),
+# and skips the final wrf.exe execution. Useful for testing the preprocessing pipeline.
+preprocess_only = false
+
 # Named variable presets for common downstream tools. String or list of strings.
 # Variables from all selected presets are merged together.
 # Available presets: "wrf_to_int" (variables needed by the wrf_to_int tool).

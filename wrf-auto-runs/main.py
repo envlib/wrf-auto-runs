@@ -121,7 +121,7 @@ if params.is_wrf_input:
     utils.check_input_extent('wrf', min_lon, min_lat, max_lon, max_lat)
 
     print('-- Processing WRF to WPS Int...')
-    run_wrf_to_int(start_date, end_date, hour_interval)
+    run_wrf_to_int(start_date, end_date, hour_interval, del_old=not params.preprocess_only)
 else:
     print('-- Downloading ERA5 data...')
     dl_era5(start_date, end_date, min_lon, min_lat, max_lon, max_lat)
@@ -130,7 +130,7 @@ else:
     utils.check_input_extent('era5', min_lon, min_lat, max_lon, max_lat)
 
     print('-- Processing ERA5 to WPS Int...')
-    run_era5_to_int(start_date, end_date, hour_interval)
+    run_era5_to_int(start_date, end_date, hour_interval, del_old=not params.preprocess_only)
 
     if params.sst_source == 'cci':
         print('-- Processing CCI SST to WPS Int...')
@@ -138,18 +138,18 @@ else:
                         min_lon, min_lat, max_lon, max_lat)
 
 print('-- Running metgrid.exe...')
-run_metgrid()
+run_metgrid(del_old=not params.preprocess_only)
 
 print('-- Updating metgrid levels in namelist...')
 update_metgrid_levels()
 
 print('-- Running real.exe...')
-run_real(run_uuid)
+run_real(run_uuid, del_old=not params.preprocess_only)
 
 if ndown_check:
 
     print('-- Running ndown.exe...')
-    ndown_interval = run_ndown(run_uuid)
+    ndown_interval = run_ndown(run_uuid, del_old=not params.preprocess_only)
 
     start_date, end_date, hour_interval, outputs = set_nml_params(domains)
     set_ndown_params(ndown_interval)
@@ -161,26 +161,35 @@ else:
     for i, domain in enumerate(domains):
         rename_dict[f'_d{i+1:02d}_'] = f'_d{domain:02d}_'
 
-start_time2 = pendulum.now('UTC')
+if params.preprocess_only:
+    end_time = pendulum.now('UTC')
 
-print('-- Running WRF...')
-monitor_wrf(outputs, end_date, run_uuid, rename_dict)
+    print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
 
-end_time = pendulum.now('UTC')
+    mins = round((end_time - start_time).total_minutes())
 
-print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
+    print(f"-- Total run minutes: {mins}")
+else:
+    start_time2 = pendulum.now('UTC')
 
-diff = end_time - start_time
+    print('-- Running WRF...')
+    monitor_wrf(outputs, end_date, run_uuid, rename_dict)
 
-mins = round(diff.total_minutes())
+    end_time = pendulum.now('UTC')
 
-print(f"-- Total run minutes: {mins}")
+    print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
 
-diff = end_time - start_time2
+    diff = end_time - start_time
 
-mins = round(diff.total_minutes())
+    mins = round(diff.total_minutes())
 
-print(f"-- WRF run minutes: {mins}")
+    print(f"-- Total run minutes: {mins}")
+
+    diff = end_time - start_time2
+
+    mins = round(diff.total_minutes())
+
+    print(f"-- WRF run minutes: {mins}")
 
 
 

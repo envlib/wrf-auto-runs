@@ -40,7 +40,7 @@ uv run pytest              # pytest wrf-era5-auto/tests/
 12. `run_ndown()` — (ndown only) Execute `ndown.exe` via `mpirun -n 4`
 13. `monitor_wrf()` — Launch `wrf.exe` via `mpirun`, poll for output, upload files in real-time
 
-`wrf-era5-auto/main_alt.py` runs steps 1–11 only (preprocessing, no WRF execution).
+Set `preprocess_only = true` in `parameters.toml` to run steps 1–11 only (preprocessing, no WRF execution) and preserve all intermediate files. Default is `false` (full pipeline).
 
 ## Key Architecture
 
