@@ -2,7 +2,8 @@ version: '3.3'
 
 services:
   wrf-runs:
-    image: mullenkamp/wrf-auto-runs:2.6
+    build: .
+    image: mullenkamp/wrf-auto-runs:2.7
     # user: ${MY_UID}:${MY_GID}
     shm_size: '1gb'
     volumes:

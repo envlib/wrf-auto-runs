@@ -1,4 +1,4 @@
-FROM mullenkamp/wrf-wps-debian:1.1
+FROM mullenkamp/wrf-wps-debian:1.2
 
 WORKDIR /app
 

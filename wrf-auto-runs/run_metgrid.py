@@ -5,7 +5,9 @@ Created on Mon Oct  6 10:40:23 2025
 
 @author: mike
 """
+import os
 import pathlib
+import resource
 import shlex
 import subprocess
 import pendulum
@@ -27,6 +29,11 @@ def run_metgrid(del_old=True):
     """
 
     """
+    resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+
+    os.environ['OMP_STACKSIZE'] = '2G'
+    os.environ['KMP_STACKSIZE'] = '2G'
+    
     cmd_str = f'{params.metgrid_exe}'
     cmd_list = shlex.split(cmd_str)
     p = subprocess.run(cmd_list, capture_output=True, text=True, check=False, cwd=params.data_path)
