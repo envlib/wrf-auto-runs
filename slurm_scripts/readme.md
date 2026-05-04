@@ -2,62 +2,69 @@
 
 These scripts run the WRF-Auto pipeline inside an Apptainer container on HPC clusters managed by Slurm.
 
+The pipeline supports two execution patterns:
+
+1. **Single-stage** — one SLURM job runs preprocessing and WRF end-to-end. Simple; fine for short runs. The original `run_wrf_*.sl` scripts in this directory use this pattern.
+2. **Split (preprocess + WRF)** — two SLURM jobs chained with `--dependency=afterok`: a fast preprocess job (gfortran image) writes inputs to S3, then a long WRF job (intel image) downloads them and runs `wrf.exe`. Recommended for long simulations and 13-month-class runs. The `run_wrf_hetzner.sl` orchestrator + `preprocess.sl` + `wrf.sl` pattern is the working example (see the `_pp` project directory in `wrf-runs`).
+
 ## Prerequisites
 
 ### 1. SIF Image
 
-The pipeline runs inside an Apptainer (SIF) image converted from the Docker image `mullenkamp/wrf-auto-runs`. Each script has `IMAGE_NAME` and `IMAGE_VERSION` variables at the top of its Configuration section — update `IMAGE_VERSION` when switching to a new release.
+The pipeline runs inside an Apptainer (SIF) image converted from one of the Docker pipeline images. Each script has `IMAGE_NAME` and `IMAGE_VERSION` variables at the top of its Configuration section — update `IMAGE_VERSION` when switching to a new release.
 
-**Option A: Download the pre-built image (recommended)**
+**Image matrix:**
+
+| Image | Compiler | WPS | Used for |
+|---|---|---|---|
+| `mullenkamp/wrf-auto-runs-wvt:1.6` | gfortran | dmpar (parallel metgrid) | preprocess stage and short single-stage WVT runs |
+| `mullenkamp/wrf-auto-runs-intel-wvt:1.6` | Intel oneAPI | serial | WRF stage (faster `wrf.exe`) |
+| `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | non-WVT variant |
+
+**Pulling the SIF (Option A: recommended — pre-built download):**
 
 ```bash
-wget -N https://b2.envlib.xyz/file/envlib/sif/wrf-auto-runs_<VERSION>.sif
+wget -N https://b2.envlib.xyz/file/envlib/sif/<image-name>_<VERSION>.sif
 ```
 
-**Option B: Pull pre-built SIF via ORAS**
-
-A pre-built SIF is published alongside each Docker image. This avoids the squashfs conversion that `apptainer pull docker://` requires (which can fail on memory-constrained HPC login nodes):
-
-```bash
-module load Apptainer
-export VERSION=2.3
-apptainer pull oras://registry-1.docker.io/mullenkamp/wrf-auto-runs:${VERSION}-sif
-mv wrf-auto-runs_${VERSION}-sif.sif wrf-auto-runs_${VERSION}.sif
-```
-
-**Option C: Build from Docker Hub**
-
-If your HPC allows it, you can convert directly from Docker Hub:
+**Option B: ORAS pull (avoids squashfs conversion):**
 
 ```bash
 module load Apptainer
-export VERSION=2.3
-apptainer pull docker://mullenkamp/wrf-auto-runs:${VERSION}
+export VERSION=1.6
+apptainer pull oras://registry-1.docker.io/mullenkamp/wrf-auto-runs-intel-wvt:${VERSION}-sif
+mv wrf-auto-runs-intel-wvt_${VERSION}-sif.sif wrf-auto-runs-intel-wvt_${VERSION}.sif
 ```
 
-Note: This may fail on some HPC systems due to memory or permission constraints during the squashfs build. If so, build locally and transfer:
+**Option C: Docker Hub via Apptainer:**
 
 ```bash
-# On your local machine
-apptainer pull docker://mullenkamp/wrf-auto-runs:${VERSION}
-
-# Copy to HPC
-scp wrf-auto-runs_${VERSION}.sif user@hpc:/path/to/scratch/
+module load Apptainer
+export VERSION=1.6
+apptainer pull docker://mullenkamp/wrf-auto-runs-intel-wvt:${VERSION}
 ```
 
-If you only have Docker locally (no Apptainer):
+May fail on memory-constrained HPC login nodes during squashfs build. Build locally and `scp` the SIF as a workaround. If you only have Docker locally:
 
 ```bash
-docker pull mullenkamp/wrf-auto-runs:${VERSION}
-docker save mullenkamp/wrf-auto-runs:${VERSION} -o wrf-auto-runs_${VERSION}.tar
-apptainer build wrf-auto-runs_${VERSION}.sif docker-archive://wrf-auto-runs_${VERSION}.tar
+docker pull mullenkamp/wrf-auto-runs-intel-wvt:${VERSION}
+docker save mullenkamp/wrf-auto-runs-intel-wvt:${VERSION} -o image.tar
+apptainer build wrf-auto-runs-intel-wvt_${VERSION}.sif docker-archive://image.tar
 ```
+
+**Refreshing a SIF after a Docker tag is republished:** Apptainer caches by tag. If the same Docker tag is re-pushed, you must clear the cache *and* delete the existing SIF before pulling, otherwise apptainer reuses the stale digest:
+
+```bash
+apptainer cache clean --force \
+  && rm -f /shared/wrf_data/<image-name>_<VERSION>.sif \
+  && apptainer pull --force --dir /shared/wrf_data docker://mullenkamp/<image-name>:${VERSION}
+```
+
+Better long-term: bump the tag every time the image content changes.
 
 ### 2. WPS_GEOG Static Data
 
 **Option A: NZ-specific dataset (recommended for New Zealand domains)**
-
-A curated WPS_GEOG dataset for New Zealand simulations:
 
 ```bash
 wget -N https://b2.envlib.xyz/file/envlib/wrf/static_data/nz_wps_geog.tar.zst -O nz_wps_geog.tar.zst
@@ -67,12 +74,11 @@ rm nz_wps_geog.tar.zst
 
 **Option B: Full WPS_GEOG from NCAR**
 
-The complete global dataset from NCAR:
-https://www2.mmm.ucar.edu/wrf/users/download/get_sources_wps_geog.html
+The complete global dataset: https://www2.mmm.ucar.edu/wrf/users/download/get_sources_wps_geog.html
 
 ### 3. parameters.toml
 
-Copy `parameters_example.toml` to `parameters.toml` and configure it with your simulation settings and remote storage credentials. Do **not** include a `[no_docker]` section -- the container uses its built-in Docker-mode paths (`/data`, `/WPS_GEOG`, `/WRF`, `/WPS`).
+Copy `parameters_example.toml` to `parameters.toml` and configure with your simulation settings and remote storage credentials. Do **not** include a `[no_docker]` section — the container uses its built-in Docker-mode paths (`/data`, `/WPS_GEOG`, `/WRF`, `/WPS`).
 
 ### 4. Network Access
 
@@ -80,11 +86,11 @@ The pipeline uses `rclone` to download ERA5 data and upload WRF output. Compute 
 
 ## Scripts
 
-### run_wrf_nesi.sl -- Single Run
+### Single-stage scripts (one SLURM job)
 
-Runs one WRF simulation. Edit the configuration section at the top of the script to set paths for your environment (`PROJECT_CODE`, `SCRATCH`, `SIF_PATH`, `WPS_GEOG_PATH`).
+#### run_wrf_nesi.sl — Single Run
 
-**Submit:**
+Runs one WRF simulation end-to-end. Edit the configuration section at the top to set paths for your environment (`PROJECT_CODE`, `SCRATCH`, `SIF_PATH`, `WPS_GEOG_PATH`).
 
 ```bash
 sbatch slurm_scripts/run_wrf_nesi.sl
@@ -98,100 +104,100 @@ sbatch --export=ALL,START_DATE="2020-01-01 00:00:00",DURATION_HOURS=48 slurm_scr
 
 Available overrides: `START_DATE`, `END_DATE`, `DOMAINS`, `DURATION_HOURS`.
 
-### run_wrf_nesi_array.sl -- Multiple Runs (Job Array)
+#### run_wrf_nesi_array.sl — Multiple Runs (Job Array)
 
-Submits multiple WRF runs as a Slurm job array, each with a different start date. The start date for each task is computed from a base date and step size:
+Submits multiple WRF runs as a Slurm job array, each with a different start date computed from a base date and step size:
 
 ```
 start_date = BASE_DATE + (SLURM_ARRAY_TASK_ID * STEP_HOURS)
 ```
-
-Edit `BASE_DATE` and `STEP_HOURS` in the script, then set the array range to match the number of runs you need. Duration is controlled globally via `duration_hours` in `parameters.toml`.
-
-**Example:** 12 runs, 48 hours apart, starting 2020-01-01:
 
 ```bash
 # BASE_DATE="2020-01-01 00:00:00", STEP_HOURS=48 (set in script)
 sbatch --array=0-11 slurm_scripts/run_wrf_nesi_array.sl
 ```
 
-This produces:
-| Task ID | Start Date |
-|---------|------------|
-| 0 | 2020-01-01 00:00:00 |
-| 1 | 2020-01-03 00:00:00 |
-| 2 | 2020-01-05 00:00:00 |
-| ... | ... |
-| 11 | 2020-01-23 00:00:00 |
+#### run_wrf_nesi_csv_array.sl — Multiple Runs (Job Array, CSV-based)
 
-### run_wrf_nesi_csv_array.sl -- Multiple Runs (Job Array, CSV-based)
+Each task reads its `start_date` and `end_date` from a CSV file (`slurm_scripts/periods.csv`), using `SLURM_ARRAY_TASK_ID` as a 0-based row index.
 
-Submits multiple WRF runs as a Slurm job array. Each task reads its `start_date` and `end_date` from a CSV file, using `SLURM_ARRAY_TASK_ID` as a 0-based row index.
-
-**CSV format** (`slurm_scripts/periods.csv`):
-
-```
+```csv
 start_date,end_date
 2020-01-01 00:00:00,2020-01-03 00:00:00
 2020-01-03 00:00:00,2020-01-05 00:00:00
 ```
 
-**Submit:**
-
 ```bash
 sbatch slurm_scripts/run_wrf_nesi_csv_array.sl
-sbatch --array=0-5 slurm_scripts/run_wrf_nesi_csv_array.sl   # override range
 ```
 
-**Auto-detect array range from CSV:**
+Auto-detect array range from CSV:
 
 ```bash
 ROWS=$(( $(wc -l < slurm_scripts/run_periods.csv) - 1 ))
 sbatch --array=0-$((ROWS - 1)) slurm_scripts/run_wrf_nesi_csv_array.sl
 ```
 
-**Use a different CSV file:**
+#### run_wrf_hetzner_csv_array.sl — Multiple Runs on Hetzner (Job Array, CSV-based)
+
+Same CSV-based approach configured for the Hetzner local cluster (Intel image, local NVMe scratch, shared NFS).
+
+#### run_wrf_uc.sl — University of Canterbury HPC
+
+Variant configured for a different HPC environment.
+
+### Split-pipeline scripts (preprocess + WRF, dependency-chained)
+
+For long simulations the preprocess stage is split from the WRF stage — preprocess runs in the gfortran image, hands inputs to S3 (`inputs/<run_uuid>/`), and the WRF stage downloads them in the intel image. Three files per project:
+
+- **`run_wrf_<cluster>.sl`** — Plain bash orchestrator (NOT a SLURM job script). Run with `./run_wrf_<cluster>.sl`. Generates a single `run_uuid` and submits the two real jobs.
+- **`preprocess.sl`** — SLURM job (gfortran image). `preprocess_only=true`, modest resource allocation, exports `n_cores_preprocess=${SLURM_NTASKS}` so dmpar metgrid uses the full allocation.
+- **`wrf.sl`** — SLURM job (intel image). `wrf_only=true`, full resources, `--dependency=afterok:<preprocess_jobid>` enforced by the orchestrator.
+
+The working pattern lives in `wrf-runs/projects/.../v33_3km_wvt_sst_max_pp/`. To create a split-pipeline run for another project, copy those three files and adjust paths/resources as needed.
+
+**Per-stage scratch:** each job uses its own `LOCAL_SCRATCH=/var/tmp/wrf_scratch/${SLURM_JOB_ID}`. The S3 inputs prefix is the only handoff between them — there's no shared filesystem dependency between preprocess and WRF.
+
+### Known gotcha: `/tmp` size with `--contain --writable-tmpfs`
+
+With `--contain --writable-tmpfs` (used by all scripts here), the in-container `/tmp` defaults to a tiny tmpfs (~64 MB on most builds). `era5_dl` streams downloads through `/tmp` for atomic writes, so the first few small files succeed and later ones silently truncate — manifesting as "metgrid failed because nothing was downloaded" with no error from the download step.
+
+**Fix in every script:**
 
 ```bash
-CSV_FILE=/path/to/dates.csv sbatch slurm_scripts/run_wrf_nesi_csv_array.sl
+mkdir -p "${LOCAL_SCRATCH}/apptainer_tmp"
+BIND_ARGS="${BIND_ARGS},${LOCAL_SCRATCH}/apptainer_tmp:/tmp"
 ```
 
-### run_wrf_hetzner_csv_array.sl -- Multiple Runs on Hetzner (Job Array, CSV-based)
-
-Same CSV-based approach as `run_wrf_nesi_csv_array.sl`, configured for the Hetzner local cluster. Uses the Intel image (`wrf-auto-runs-intel:1.1`), local NVMe scratch, and shared NFS storage. Submit the same way:
-
-```bash
-sbatch slurm_scripts/run_wrf_hetzner_csv_array.sl
-```
-
-### run_wrf_uc.sl -- University of Canterbury HPC
-
-A variant configured for a different HPC environment. Same structure as `run_wrf_nesi.sl` with different default paths and resource allocations.
+This binds `/tmp` inside the container to a real disk path on `LOCAL_SCRATCH`, giving rclone the full size of the local NVMe.
 
 ## How It Works
 
 The scripts use Apptainer bind mounts to inject host files into the container, replicating the same setup as `docker-compose.yml`:
 
 | Host Path | Container Path | Purpose |
-|-----------|---------------|---------|
+|---|---|---|
 | `parameters.toml` | `/app/parameters.toml` | Pipeline configuration |
 | WPS_GEOG directory | `/WPS_GEOG` (read-only) | Static geography data |
 | Per-job scratch directory | `/data` | Working directory for namelists, metgrid, WRF output |
+| `${LOCAL_SCRATCH}/apptainer_tmp` | `/tmp` | Real-disk-backed `/tmp` (see gotcha above) |
 
-WRF, WPS, Python, and all dependencies are baked into the SIF image -- no bind mounts needed for those.
+WRF, WPS, Python, and all dependencies are baked into the SIF image — no bind mounts needed for those.
 
 Key flags:
-- **`--writable-tmpfs`** -- The pipeline creates a symlink inside `/WPS/geogrid/` for Noah-MP. Without this, the read-only SIF filesystem would block it.
-- **`HYDRA_LAUNCHER=fork`** -- MPICH inside the container detects Slurm environment variables and tries to use `srun`, which doesn't exist in the container. This forces MPICH's Hydra process manager to use `fork` instead.
-- **`HYDRA_IFACE=lo`** -- Forces MPICH to use the loopback interface for intra-container MPI communication, avoiding issues with host network interfaces (e.g. InfiniBand) that may not work inside the container.
-- **`n_cores=$SLURM_NTASKS`** -- Syncs the pipeline's MPI process count with the Slurm allocation.
+- **`--writable-tmpfs`** — The pipeline creates a symlink inside `/WPS/geogrid/` for Noah-MP. Without this, the read-only SIF filesystem would block it.
+- **`HYDRA_LAUNCHER=fork`** — MPICH inside the container detects Slurm environment variables and tries to use `srun`, which doesn't exist in the container. This forces MPICH's Hydra process manager to use `fork` instead.
+- **`HYDRA_IFACE=lo`** — Forces MPICH to use the loopback interface for intra-container MPI communication, avoiding issues with host network interfaces (e.g. InfiniBand) that may not work inside the container.
+- **`n_cores=$SLURM_NTASKS`** — Syncs `wrf.exe`'s MPI rank count with the Slurm allocation. Used by single-stage and WRF-stage scripts only.
+- **`n_cores_preprocess=$SLURM_NTASKS`** — Syncs metgrid/real/ndown ranks with the Slurm allocation. Used by preprocess-stage scripts (the gfortran image is dmpar-built so this actually parallelizes metgrid).
+- **`run_uuid=$RUN_UUID`** — Shared between preprocess and WRF stages so they target the same `inputs/<run_uuid>/` S3 prefix. Generated once by the orchestrator and exported to both jobs.
 
 ### Container isolation: `--contain` and `--cleanenv`
 
 All scripts use `--contain` and `--cleanenv` for robust MPI behaviour across HPC environments:
 
-- **`--contain`** -- Prevents Apptainer from applying admin-configured bind mounts. Some HPC sites (e.g. NeSI) configure Apptainer to inject host MPI libraries into containers (the "hybrid MPI" model for InfiniBand performance). This replaces the container's own MPI with the host's MPICH, which then tries to use Slurm's PMI for process management. Since PMI isn't accessible from inside the container, `mpirun` fails with `HYD_pmci_wait_for_completion`. `--contain` blocks these admin bind mounts while still honoring the explicit `--bind` flags defined in the script. HPCs that don't inject host MPI (e.g. University of Canterbury) are unaffected by this flag.
-- **`--cleanenv`** -- Strips all host environment variables from the container, preventing Slurm variables (`SLURM_*`, `PMI_*`) from leaking in and interfering with the container's MPI. Only variables explicitly passed via `--env` are set inside the container. Note: `--cleanenv` also strips the `TZ` (timezone) variable and `--contain` blocks access to `/etc/localtime`, so `TZ=UTC` is explicitly passed via `--env`. The Python code also uses `pendulum.now('UTC')` rather than `pendulum.now()` to avoid depending on the container's timezone configuration.
+- **`--contain`** — Prevents Apptainer from applying admin-configured bind mounts. Some HPC sites (e.g. NeSI) configure Apptainer to inject host MPI libraries into containers (the "hybrid MPI" model for InfiniBand performance). This replaces the container's own MPI with the host's MPICH, which then tries to use Slurm's PMI for process management. Since PMI isn't accessible from inside the container, `mpirun` fails with `HYD_pmci_wait_for_completion`. `--contain` blocks these admin bind mounts while still honoring the explicit `--bind` flags defined in the script. Note: `--contain` also disables Apptainer's auto-mount of `/tmp`, which is why we explicitly bind a host path to `/tmp` (see gotcha above).
+- **`--cleanenv`** — Strips all host environment variables from the container, preventing Slurm variables (`SLURM_*`, `PMI_*`) from leaking in and interfering with the container's MPI. Only variables explicitly passed via `--env` are set inside the container. Note: `--cleanenv` also strips the `TZ` (timezone) variable and `--contain` blocks access to `/etc/localtime`, so `TZ=UTC` is explicitly passed via `--env`. The Python code also uses `pendulum.now('UTC')` rather than `pendulum.now()` to avoid depending on the container's timezone configuration.
 
 Each job gets an isolated data directory (using `$SLURM_JOB_ID` or `$SLURM_ARRAY_JOB_ID_$SLURM_ARRAY_TASK_ID`), so multiple runs don't interfere with each other.
 
@@ -203,16 +209,15 @@ scancel <job_id>          # Cancel a job
 scancel <array_job_id>    # Cancel all tasks in an array
 
 sinfo --format="%P %C"
-
 ```
 
-## Completed jobs
+## Completed Jobs
 
 ```bash
-sacct -j <job_id> --format=JobID,Elapsed,Timelimit,TotalCPU,Alloc%2,MaxRSS,State  --units=G # List the peak RAM usage and elapsed time
-
+sacct -j <job_id> --format=JobID,Elapsed,Timelimit,TotalCPU,Alloc%2,MaxRSS,State --units=G
 ```
 
 Log files are written to the submission directory:
 - Single run: `wrf-auto_<job_id>.log`
 - Array: `wrf-auto_<array_job_id>_<task_id>.log`
+- Split-pipeline: `preprocess_<job_id>.log`, `wrf_<job_id>.log`

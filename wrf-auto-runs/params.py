@@ -54,8 +54,20 @@ if 'domains' in os.environ:
 if 'n_cores' in os.environ:
     file['n_cores'] = int(os.environ['n_cores'])
 
+if 'n_cores_preprocess' in os.environ:
+    file['n_cores_preprocess'] = int(os.environ['n_cores_preprocess'])
+
 if 'duration_hours' in os.environ:
     file['time_control']['duration_hours'] = int(os.environ['duration_hours'])
+
+if 'wrf_only' in os.environ:
+    file['wrf_only'] = os.environ['wrf_only'].lower() in ('true', '1', 'yes')
+
+if 'preprocess_only' in os.environ:
+    file['preprocess_only'] = os.environ['preprocess_only'].lower() in ('true', '1', 'yes')
+
+if 'cleanup_inputs' in os.environ:
+    file['cleanup_inputs'] = os.environ['cleanup_inputs'].lower() in ('true', '1', 'yes')
 
 ## Resolve output presets + user variables into a single list
 _preset_vars = set()
@@ -80,6 +92,12 @@ is_remote_output = 'remote' in file and 'output' in file.get('remote', {})
 is_wrf_input = 'remote' in file and 'wrf' in file.get('remote', {})
 
 preprocess_only = file.get('preprocess_only', False)
+wrf_only = file.get('wrf_only', False)
+cleanup_inputs = file.get('cleanup_inputs', True)
+n_cores_preprocess = int(file.get('n_cores_preprocess', 4))
+
+if preprocess_only and wrf_only:
+    raise ValueError('preprocess_only and wrf_only are mutually exclusive — set at most one to true.')
 
 sst_source = file.get('sst', {}).get('source', 'era5')
 if sst_source not in ('era5', 'cci'):

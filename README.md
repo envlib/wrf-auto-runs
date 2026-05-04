@@ -1,35 +1,89 @@
-# wrf-era5-auto
+# wrf-auto-runs
 
-Automated pipeline to run the WRF (Weather Research and Forecasting) model using ERA5 reanalysis data or WRF output as boundary and initial conditions. All configuration is driven by a single `parameters.toml` file. Runs inside a Docker container with WRF 4.6.1-ARW and WPS 4.6.0 pre-installed.
+Automated pipeline to run the WRF (Weather Research and Forecasting) model using ERA5 reanalysis data or WRF output as boundary and initial conditions. All configuration is driven by a single `parameters.toml` file. Runs inside a Docker container with WRF 4.7.1-ARW and WPS 4.6.0 pre-installed.
+
+The pipeline supports either a **single-stage** workflow (everything in one container) or a **split workflow** (preprocess + WRF in separate containers/SLURM jobs, handed off via S3). The split workflow is the recommended pattern for long simulations and HPC.
 
 ## Prerequisites
 
 - Linux with Docker installed (your user must be in the `docker` group)
 - WPS_GEOG static geography data — download with `test_scripts/add_geog.sh`
 
-## Quick Start
+## Quick Start (Single-Stage)
 
 ```bash
 # Edit parameters.toml — at minimum fill in [domains], [time_control], and [remote] credentials
 cp parameters_example.toml parameters.toml
 
 # Edit the docker-compose.yml to map the local WPS_GEOG path
-docker-compose up -d      # Run and detach from process 
-docker-compose logs -f    # Look at the logs go!
+docker compose up -d           # Run and detach from process
+docker compose logs -f         # Look at the logs go!
 
 # Once everything has finished/failed you need to clean up the docker-compose instance
-docker-compose down
+docker compose down
 ```
+
+## Split Workflow (Preprocess + WRF)
+
+The split workflow runs preprocessing (steps through `real.exe`) in one container, hands off `wrfinput_d*` / `wrfbdy_d*` / `namelist.input` / etc. via S3, and runs `wrf.exe` in a second container. This decouples the preprocess step (cheap, gfortran image) from the long WRF run (expensive, intel image), and is what production SLURM runs use.
+
+### Local (docker-compose)
+
+A two-service compose file with `depends_on: condition: service_completed_successfully` plus a tiny wrapper:
+
+```yaml
+# docker-compose.yml
+services:
+  preprocess:
+    image: mullenkamp/wrf-auto-runs-wvt:1.6
+    environment:
+      - run_uuid=${RUN_UUID:?}
+      - preprocess_only=true
+      - n_cores_preprocess=8
+    volumes:
+      - "./parameters.toml:/app/parameters.toml"
+      - ~/WPS_GEOG:/WPS_GEOG
+      - ~/data/wrf/tests/test_wvt_preprocess:/data
+  wrf:
+    image: mullenkamp/wrf-auto-runs-intel-wvt:1.6
+    environment:
+      - run_uuid=${RUN_UUID:?}
+      - wrf_only=true
+      - n_cores=8
+    volumes:
+      - "./parameters.toml:/app/parameters.toml"
+      - ~/WPS_GEOG:/WPS_GEOG
+      - ~/data/wrf/tests/test_wvt_wrf:/data
+    depends_on:
+      preprocess:
+        condition: service_completed_successfully
+```
+
+```bash
+#!/bin/bash
+# run_local.sh
+export RUN_UUID="${RUN_UUID:-$(python3 -c 'import uuid; print(uuid.uuid4().hex[-13:])')}"
+docker compose up --abort-on-container-failure
+```
+
+Each stage gets its own scratch volume so the S3 handoff is actually exercised (vs. shared volume which would mask S3 issues until SLURM).
+
+### SLURM
+
+A per-project orchestrator (plain bash, not a SLURM job) generates a `run_uuid` and submits two jobs with `--dependency=afterok:<preprocess_jobid>`. See `slurm_scripts/readme.md` for cluster-specific scripts.
+
 ## docker-compose.yml
+
 ### WPS_GEOG path
-The local WPS_GEOG path must be mapped to /WPS_GEOG in the docker image.
-It should be something like this:
+
+The local WPS_GEOG path must be mapped to /WPS_GEOG in the docker image:
+
 ```
 - /local/path/WPS_GEOG:/WPS_GEOG
 ```
-The first part is the local path then the docker image path (with a colon in between)
 
 The static data for NZ can be downloaded and extracted like this:
+
 ```bash
 wget -N https://b2.envlib.xyz/file/envlib/wrf/static_data/nz_wps_geog.tar.zst
 tar --zstd -xf nz_wps_geog.tar.zst
@@ -37,7 +91,8 @@ rm nz_wps_geog.tar.zst
 ```
 
 ### Mount the data directory
-Internally, WRF in the docker image runs all processes in the /data path (in the docker image). The user can mount this path to their local drive to see the processes and data.
+
+WRF in the docker image runs all processes in `/data`. Mount this path to a local drive to inspect intermediate files:
 
 ```
 - /local/path/test_data:/data
@@ -50,6 +105,11 @@ All settings live in `parameters.toml`. See `parameters_example.toml` for a full
 ### Top-level
 
 - **`n_cores`** — Number of MPI processes for `wrf.exe` (max ~24 before efficiency drops).
+- **`n_cores_preprocess`** — Number of MPI processes for `metgrid.exe` / `real.exe` / `ndown.exe`. Default `4`. Bump higher (8–16) to speed up long preprocessing runs. Requires the gfortran preprocess image (built dmpar from `wrf-wps-wvt-debian:1.3` onward).
+- **`preprocess_only`** — Run preprocessing through `real.exe`, upload `inputs/<run_uuid>/` to S3, exit. Mutually exclusive with `wrf_only`.
+- **`wrf_only`** — Skip preprocessing, download `inputs/<run_uuid>/` from S3, run `wrf.exe`. Requires `run_uuid` to be set (env or TOML).
+- **`cleanup_inputs`** — Default `true`. Single cleanup knob: deletes intermediate preprocessing files (met_em, ERA5 NetCDF, WPS int files) locally as the run progresses, AND purges `inputs/<run_uuid>/` from S3 after a successful WRF run. Set to `false` to keep everything for inspection.
+- **`run_uuid`** — Optional 13-char hex identifier for the run. Normally generated fresh per run; set explicitly to re-run a `wrf_only` stage against an existing `inputs/<run_uuid>/` prefix. Precedence: env var > TOML > generated.
 - **`output_presets`** — Optional string or list of named variable presets (e.g. `'wrf_to_int'`). Each preset expands to the set of wrfout variables required by the named tool. Variables from all selected presets are merged together.
 - **`output_variables`** — Optional list of additional wrfout variables to retain. Merged with any preset variables. Coordinate and auxiliary 3D variables are included automatically. Comment out both `output_presets` and `output_variables` to keep all variables.
 
@@ -86,7 +146,7 @@ Rclone configuration for data transfer (uses rclone config syntax).
 
 - **`[remote.era5]`** — Source for ERA5 boundary-condition files.
 - **`[remote.wrf]`** — Source for WRF output files (alternative to ERA5). Includes a `domain` key to specify which domain's wrfout files to use (e.g. `d03`). When present, the pipeline downloads wrfout files and converts them to WPS intermediate format using `wrf_to_int` instead of ERA5.
-- **`[remote.output]`** — Destination for WRF output uploads.
+- **`[remote.output]`** — Destination for WRF output uploads, the `inputs/<run_uuid>/` handoff prefix (split workflow), and `logs/<run_uuid>/` failure-log uploads.
 
 ### `[ndown]`
 
@@ -109,7 +169,7 @@ To run without Docker, uncomment the `[no_docker]` section in `parameters.toml` 
 ```toml
 [no_docker]
 wps_path = '/path/to/WPS-4.6.0'
-wrf_path = '/path/to/WRF-4.6.1-ARW'
+wrf_path = '/path/to/WRF-4.7.1-ARW'
 data_path = '/path/to/working/directory'
 geog_data_path = '/path/to/WPS_GEOG'
 ```
@@ -117,27 +177,38 @@ geog_data_path = '/path/to/WPS_GEOG'
 Then run:
 
 ```bash
-uv run wrf-era5-auto/main.py
+uv run wrf-auto-runs/main.py
 ```
 
-Set `preprocess_only = true` in `parameters.toml` to run preprocessing only (steps 1-11) and preserve all intermediate files; `wrf.exe` is skipped.
+Set `preprocess_only = true` in `parameters.toml` to run preprocessing only and upload to S3 inputs/<run_uuid>/; `wrf.exe` is skipped. Pair with a separate `wrf_only = true` invocation to do the WRF stage from those uploaded inputs.
 
 ## Pipeline Steps
 
+When neither mode flag is set (single-stage), or when `preprocess_only=true`:
+
 1. Validate ndown parameters and determine mode
-2. Validate namelists and resolve domain list
+2. Validate executables and resolve domain list
 3. Configure namelists for the initial domain set
 4. Run `geogrid.exe` (static geography processing)
 5. Set time/date/output parameters and generate output file list
-6. Upload namelists to remote storage
+6. Generate WVT tracer mask files (`tracer_opt=4` only)
 7. Download prior wrfout files (ndown mode only)
 8. Download ERA5 or WRF data via rclone
 9. Convert to WPS intermediate format (`era5_to_int` or `wrf_to_int`)
-10. Run `metgrid.exe` (horizontal interpolation)
-11. Auto-detect `num_metgrid_levels` from met_em files and update namelist
-12. Run `real.exe` (vertical interpolation and initial/boundary conditions)
-13. Run `ndown.exe` (ndown mode only)
-14. Run `wrf.exe`, poll for completed output files, upload in real-time
+10. Process CCI SST to WPS Int (CCI SST source only)
+11. Run `metgrid.exe` (horizontal interpolation; parallel via `n_cores_preprocess` on dmpar builds)
+12. Auto-detect `num_metgrid_levels` from met_em files and update namelist
+13. Run `real.exe` (vertical interpolation and initial/boundary conditions)
+14. Run `ndown.exe` (ndown mode only)
+15. (`preprocess_only=true`) Upload run inputs to `inputs/<run_uuid>/` on S3 and exit
+16. Otherwise run `wrf.exe`, poll for completed output files, upload in real-time
+
+When `wrf_only=true`:
+
+1. Re-derive run context (domains, outputs, end_date, rename map) from `parameters.toml`
+2. Download `inputs/<run_uuid>/` from S3 into the run directory
+3. Run `wrf.exe`, poll for completed output files, upload in real-time
+4. (if `cleanup_inputs=true`) Purge `inputs/<run_uuid>/` from S3
 
 ## WRF Output as Boundary Conditions
 
@@ -162,6 +233,16 @@ When `[remote.wrf]` is present, the pipeline:
 
 The number of pressure levels matches the source wrfout's eta level count, spaced logarithmically from 1000 hPa to P_TOP. This adapts automatically to any source WRF configuration.
 
+## S3 Layout
+
+Under `[remote.output].path`:
+
+| Prefix | Contents | Lifetime |
+|---|---|---|
+| `inputs/<run_uuid>/` | `namelist.input`, `namelist.wps`, `wrfinput_d*`, `wrfbdy_d*`, `wrffdda_d*`, `wrflowinp_d*`, `trmask_d*` | Created by preprocess; consumed by wrf-only; purged after successful WRF if `cleanup_inputs=true` |
+| `<run_uuid>/wrfout*` | Main WRF output files | Uploaded during `monitor_wrf`; persisted |
+| `logs/<run_uuid>/rsl.*` | `rsl.error.*` / `rsl.out.*` from failed `real.exe` / `ndown.exe` / `wrf.exe` | Uploaded only on failure |
+
 ## Output Files
 
 | File prefix | Description |
@@ -172,11 +253,24 @@ The number of pressure levels matches the source wrfout's eta level count, space
 
 All output files are uploaded to `[remote.output]` during the run and deleted locally after upload.
 
+## Image Matrix
+
+| Image | Compiler | WPS | Use |
+|---|---|---|---|
+| `mullenkamp/wrf-auto-runs-wvt:1.6` | gfortran | dmpar | Preprocess stage (parallel metgrid). Also fine for single-stage short runs. |
+| `mullenkamp/wrf-auto-runs-intel-wvt:1.6` | Intel oneAPI | serial | WRF stage (faster `wrf.exe`). Also fine for single-stage runs where WRF dominates. |
+| `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | Non-WVT variant. |
+
 ## Project Structure
 
 ```
-wrf-era5-auto/           Python pipeline modules
-test_scripts/            Helper scripts (add_geog.sh, run_wrf.sh, run_wrf.sl)
+wrf-auto-runs/           Python pipeline modules
+slurm_scripts/           SLURM job scripts (cluster-specific)
+test_scripts/            Helper scripts (add_geog.sh, run_wrf.sh, etc.)
 parameters_example.toml  Annotated configuration template
-docker-compose.yml       Docker run configuration
+docker-compose.yml       Docker run configuration (single-stage default)
+intel_wvt/               Intel WVT pipeline image build context
+gfortran_wvt/            gfortran WVT pipeline image build context
+intel_wrf/               Intel non-WVT pipeline image build context
+gfortran_wvt_ref/        gfortran reference (WRF 4.3.3) build context
 ```

@@ -34,7 +34,7 @@ def run_metgrid(del_old=True):
     os.environ['OMP_STACKSIZE'] = '2G'
     os.environ['KMP_STACKSIZE'] = '2G'
     
-    cmd_str = f'{params.metgrid_exe}'
+    cmd_str = f'mpirun -n {params.n_cores_preprocess} {params.metgrid_exe}'
     cmd_list = shlex.split(cmd_str)
     p = subprocess.run(cmd_list, capture_output=True, text=True, check=False, cwd=params.data_path)
 

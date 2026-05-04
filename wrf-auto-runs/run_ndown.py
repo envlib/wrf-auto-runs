@@ -45,7 +45,7 @@ def run_ndown(run_uuid, del_old=True):
     with open(params.wrf_nml_path, 'w') as nml_file:
        wrf_nml.write(nml_file)
 
-    cmd_str = f'mpirun -n 4 --map-by core {params.ndown_exe}'
+    cmd_str = f'mpirun -n {params.n_cores_preprocess} --map-by core {params.ndown_exe}'
     cmd_list = shlex.split(cmd_str)
     p = subprocess.run(cmd_list, capture_output=False, text=False, check=False, cwd=params.run_path)
 
