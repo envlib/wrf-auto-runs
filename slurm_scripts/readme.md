@@ -17,8 +17,8 @@ The pipeline runs inside an Apptainer (SIF) image converted from one of the Dock
 
 | Image | Compiler | WPS | Used for |
 |---|---|---|---|
-| `mullenkamp/wrf-auto-runs-wvt:1.6` | gfortran | dmpar (parallel metgrid) | preprocess stage and short single-stage WVT runs |
-| `mullenkamp/wrf-auto-runs-intel-wvt:1.6` | Intel oneAPI | serial | WRF stage (faster `wrf.exe`) |
+| `mullenkamp/wrf-auto-runs-wvt:1.7` | gfortran | dmpar (parallel metgrid) | preprocess stage and short single-stage WVT runs |
+| `mullenkamp/wrf-auto-runs-intel-wvt:1.7` | Intel oneAPI | serial | WRF stage (faster `wrf.exe`) |
 | `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | non-WVT variant |
 
 **Pulling the SIF (Option A: recommended — pre-built download):**
@@ -31,7 +31,7 @@ wget -N https://b2.envlib.xyz/file/envlib/sif/<image-name>_<VERSION>.sif
 
 ```bash
 module load Apptainer
-export VERSION=1.6
+export VERSION=1.7
 apptainer pull oras://registry-1.docker.io/mullenkamp/wrf-auto-runs-intel-wvt:${VERSION}-sif
 mv wrf-auto-runs-intel-wvt_${VERSION}-sif.sif wrf-auto-runs-intel-wvt_${VERSION}.sif
 ```
@@ -40,7 +40,7 @@ mv wrf-auto-runs-intel-wvt_${VERSION}-sif.sif wrf-auto-runs-intel-wvt_${VERSION}
 
 ```bash
 module load Apptainer
-export VERSION=1.6
+export VERSION=1.7
 apptainer pull docker://mullenkamp/wrf-auto-runs-intel-wvt:${VERSION}
 ```
 
@@ -157,6 +157,45 @@ For long simulations the preprocess stage is split from the WRF stage — prepro
 The working pattern lives in `wrf-runs/projects/.../v33_3km_wvt_sst_max_pp/`. To create a split-pipeline run for another project, copy those three files and adjust paths/resources as needed.
 
 **Per-stage scratch:** each job uses its own `LOCAL_SCRATCH=/var/tmp/wrf_scratch/${SLURM_JOB_ID}`. The S3 inputs prefix is the only handoff between them — there's no shared filesystem dependency between preprocess and WRF.
+
+### Chunked WRF runs (restart support)
+
+For very long simulations that won't finish within a single SLURM job's time limit (e.g. a 13-month run on a cluster with 72-hour job caps), enable WRF restart in `parameters.toml`:
+
+```toml
+[restart]
+enable = true
+interval_days = 7              # wrf writes a wrfrst every 7 simulation days
+stop_after_upload = true       # each wrf.sl invocation runs ~7 sim days then exits cleanly
+```
+
+Workflow:
+
+1. Run `./run_wrf_<cluster>.sl` once to launch preprocess + the first WRF chunk. Note the `RUN_UUID` it prints.
+2. Queue additional `wrf.sl` jobs reusing that `RUN_UUID` until the simulation reaches `end_date`. Either manually:
+
+   ```bash
+   RUN_UUID=<uuid> sbatch wrf.sl     # chunk 2
+   RUN_UUID=<uuid> sbatch wrf.sl     # chunk 3
+   ...
+   ```
+
+   or chained:
+
+   ```bash
+   PREV=<chunk_1_jobid>
+   for i in 2 3 4 ...; do
+       PREV=$(RUN_UUID=<uuid> sbatch --parsable --dependency=afterany:${PREV} wrf.sl)
+   done
+   ```
+
+   Each chunk reads the prior chunk's `wrfrst` from `inputs/<RUN_UUID>/`, runs `interval_days` of simulation, writes a new `wrfrst`, and exits.
+3. After the final chunk completes, manually purge `inputs/<RUN_UUID>/` from S3 (auto-cleanup is disabled in `stop_after_upload` mode).
+
+Notes:
+
+- `RUN_UUID` can also be pinned in `parameters.toml` (`run_uuid = "..."`) instead of being passed as an env var — same precedence rules as everywhere else (env > toml > generated).
+- `stop_after_upload=false` runs the entire simulation in one invocation, writing wrfrst files at intervals along the way (only the latest is retained on S3). Use this when the simulation fits in one job and you just want incremental restart points for crash recovery.
 
 ### Known gotcha: `/tmp` size with `--contain --writable-tmpfs`
 

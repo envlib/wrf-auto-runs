@@ -532,6 +532,51 @@ def set_ndown_params(interval_seconds):
         wrf_nml.write(nml_file)
 
 
+def apply_restart_namelist(restart_time, restart_interval_minutes, end_date_override=None):
+    """In-place edit of run_path/namelist.input to enable a restart run.
+
+    restart_time: pendulum datetime — the wrfrst timestamp; None for cold-start with restart writes enabled.
+    restart_interval_minutes: int — WRF restart_interval (interval_days * 24 * 60).
+    end_date_override: pendulum datetime — when set, override end_date* fields (used by stop_after_upload).
+
+    Note: adjust_output_times is intentionally NOT modified. Confirmed by reading WRF's share/output_wrf.F
+    that the flag only affects history (wrfout) writes, not restart. wrfrst timestamps always reflect the
+    actual internal model time, which is what we want for restart correctness.
+    """
+    nml_path = params.run_path.joinpath('namelist.input')
+    nml = f90nml.read(nml_path)
+    parent_id = nml['domains']['parent_id']
+    n_domains = len(parent_id) if isinstance(parent_id, (list, tuple)) else 1
+
+    if restart_time is not None:
+        nml['time_control']['restart'] = True
+        nml['time_control']['start_year']   = [restart_time.year]   * n_domains
+        nml['time_control']['start_month']  = [restart_time.month]  * n_domains
+        nml['time_control']['start_day']    = [restart_time.day]    * n_domains
+        nml['time_control']['start_hour']   = [restart_time.hour]   * n_domains
+        nml['time_control']['start_minute'] = [restart_time.minute] * n_domains
+        nml['time_control']['start_second'] = [restart_time.second] * n_domains
+    nml['time_control']['restart_interval'] = restart_interval_minutes
+    nml['time_control']['override_restart_timers'] = True
+    # write_hist_at_0h_rst forces wrf.exe to write a history frame at chunk_start on restart.
+    # Without this, restart chunks skip the chunk_start write and the first wrfout file is named
+    # for chunk_start + history_interval (e.g. Feb13_03:00:00.nc), leaving the previous chunk's
+    # 1-frame Feb13_00:00:00.nc file orphaned. With it, chunk N+1 writes to Feb13_00:00:00.nc and
+    # NF_CLOBBER overwrites the prior 1-frame file with the full 8-frame version. See
+    # share/mediation_integrate.F lines 89-120.
+    nml['time_control']['write_hist_at_0h_rst'] = True
+    if end_date_override is not None:
+        nml['time_control']['end_year']   = [end_date_override.year]   * n_domains
+        nml['time_control']['end_month']  = [end_date_override.month]  * n_domains
+        nml['time_control']['end_day']    = [end_date_override.day]    * n_domains
+        nml['time_control']['end_hour']   = [end_date_override.hour]   * n_domains
+        nml['time_control']['end_minute'] = [end_date_override.minute] * n_domains
+        nml['time_control']['end_second'] = [end_date_override.second] * n_domains
+
+    with open(nml_path, 'w') as f:
+        nml.write(f)
+
+
 def update_metgrid_levels():
     """
     Read the first met_em file and update namelist.input with the actual

@@ -18,8 +18,8 @@ The split modes enable a SLURM dependency chain (preprocess job → WRF job via 
 
 | Image | Compiler | WPS build | Use |
 |---|---|---|---|
-| `mullenkamp/wrf-auto-runs-wvt:1.6` | gfortran | dmpar | preprocess stage (parallel metgrid) and short single-stage runs |
-| `mullenkamp/wrf-auto-runs-intel-wvt:1.6` | Intel oneAPI | serial | WRF stage (faster `wrf.exe`) |
+| `mullenkamp/wrf-auto-runs-wvt:1.7` | gfortran | dmpar | preprocess stage (parallel metgrid) and short single-stage runs |
+| `mullenkamp/wrf-auto-runs-intel-wvt:1.7` | Intel oneAPI | serial | WRF stage (faster `wrf.exe`) |
 | `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | non-WVT variant |
 
 Both WPS builds inject heap-array allocation flags (`-fno-stack-arrays` for gfortran, `-heap-arrays` for Intel) — required for stable long preprocessing runs (without them metgrid segfaults in libc partway through). See `~/.claude/projects/.../memory/wps_heap_arrays_requirement.md` and `wrf-docker-builds/CLAUDE.md`.
@@ -68,21 +68,37 @@ When `wrf_only=false` (single-stage or preprocess-only), the pipeline runs:
 
 When `wrf_only=true`:
 
-1. `derive_wrf_run_context()` — Re-compute `domains` / `outputs` / `end_date` / `rename_dict` from TOML
-2. `download_run_inputs(run_uuid)` — Download the inputs prefix from S3 into `params.run_path`
-3. `monitor_wrf()` — Run `wrf.exe`
-4. `cleanup_run_inputs(run_uuid)` — (if `cleanup_inputs=true`) Purge `inputs/<run_uuid>/` from S3
+1. `derive_wrf_run_context()` — Re-compute `domains` / `outputs` / `start_date` / `end_date` / `rename_dict` from TOML
+2. `download_run_inputs(run_uuid)` — Download the inputs prefix from S3 into `params.run_path` (includes any prior `wrfrst_d*` files when restart is enabled)
+3. (if `[restart].enable=true`) `detect_restart_state()` — Scan `params.run_path` for any downloaded `wrfrst_d*` and parse the latest timestamp. `None` = cold-start chunk; otherwise restart from that wrfrst timestamp.
+4. (if `[restart].enable=true`) `apply_restart_namelist()` — In-place edit of `run_path/namelist.input` to set `restart=.true.`, `start_date*` = wrfrst timestamp, `restart_interval` = `interval_days * 24 * 60` minutes, `override_restart_timers=.true.` (timer counts from chunk_start), `write_hist_at_0h_rst=.true.` (forces wrf.exe to write a history frame at chunk_start so the next chunk's `Feb13_00:00:00.nc` clobbers any prior 1-frame version with a full 8-frame version). When `stop_after_upload=true`, also overrides `end_date*` to `min(chunk_start + interval_days, original_end_date)` so wrf.exe naturally exits at chunk_end without needing SIGTERM.
+5. `monitor_wrf()` — Run `wrf.exe`. Polls every 60s for completed wrfout / wrfrst files; uploads them as soon as detected.
+6. `cleanup_run_inputs(run_uuid)` — (if `cleanup_inputs=true` AND NOT `restart_stop_after_upload`) Purge `inputs/<run_uuid>/` from S3. `stop_after_upload=true` disables auto-cleanup because the prefix is shared across multiple chained sbatch jobs and premature deletion breaks the chain.
 
 ## Mode Toggles (TOML / env vars)
 
-All four can be set in `parameters.toml` or overridden via env var (env wins):
+All can be set in `parameters.toml` or overridden via env var (env wins):
 
 - **`preprocess_only`** (default `false`) — Skip the WRF stage; upload inputs to S3 and exit. Mutually exclusive with `wrf_only`.
 - **`wrf_only`** (default `false`) — Skip preprocessing; download inputs from S3 and run WRF. Requires `run_uuid` to be supplied (env or TOML).
 - **`cleanup_inputs`** (default `true`) — Single cleanup knob. When true: deletes intermediate preprocessing files (met_em, ERA5 NetCDF, WPS int files) locally during the run, AND purges the `inputs/<run_uuid>/` S3 prefix after a successful WRF stage. When false: keeps everything for inspection / re-running.
 - **`run_uuid`** (default: newly generated) — 13-char hex identifier for the run. Precedence: env > TOML > generated. Useful for re-running a wrf-only stage against an existing inputs prefix.
 
-Other key TOML/env settings:
+### `[restart]` section — chunked WRF runs
+
+Enables WRF to write `wrfrst` files at a fixed interval and continue from them on subsequent `wrf_only` invocations. Designed for long simulations split across SLURM jobs subject to per-job time limits.
+
+- **`enable`** (default `false`) — Master switch. When true, `apply_restart_namelist()` configures the namelist for restart-aware behavior on every wrf_only invocation.
+- **`interval_days`** (required when `enable=true`) — WRF `restart_interval` set to `interval_days * 24 * 60` minutes.
+- **`stop_after_upload`** (default `false`) — When true, the wrf_only invocation runs ~`interval_days` of simulation then exits cleanly (achieved by overriding `end_date*` in the namelist to `chunk_end`, so wrf.exe reaches it naturally; no signal handling). Designed for chaining multiple `sbatch wrf.sl` jobs across `interval_days` boundaries. **Disables auto-cleanup of `inputs/<run_uuid>/`** — multiple sbatch jobs share the prefix; user manually purges after the simulation completes.
+
+**S3 layout for restart artifacts:** wrfrst files live in the `inputs/<run_uuid>/` prefix alongside wrfinput/wrfbdy. Only the latest wrfrst per domain is kept on S3 (older ones are deleted via `cleanup_prior_wrfrst` after each upload).
+
+**Wrfrst upload timing:** the in-loop poll uploads a wrfrst file when (a) a newer wrfrst exists locally (definitely complete), OR (b) the file's mtime has been stable for ≥60 seconds (single-write completion detected). Without (b), a wrfrst with no successor would sit locally until the next `restart_interval` write — potentially hours of wallclock for slow-resolving simulations.
+
+**Final wrfout file at midnight chunk_end:** `monitor_wrf` skips the post-loop upload of the chunk_end single-frame wrfout file when the chunk's effective end falls exactly on midnight (00:00:00). Such a file is a "deceptive partial day" — same filename pattern as a new day file but contains only the rollover frame. Either (a) the next chunk clobbers it with a full 8-frame version on restart (via `write_hist_at_0h_rst`), or (b) it's the final chunk and the rollover state is also captured in wrfrst. Mid-day end_dates produce non-deceptive final files (multiple frames of legitimate end-of-sim data) and are uploaded normally.
+
+### Other key TOML/env settings
 
 - **`n_cores`** (default 8) — MPI ranks for `wrf.exe`.
 - **`n_cores_preprocess`** (default 4) — MPI ranks for `metgrid.exe` / `real.exe` / `ndown.exe`. Requires the gfortran preprocess image (`wrf-auto-runs-wvt:1.6+`) which has dmpar WPS.
@@ -91,7 +107,7 @@ Other key TOML/env settings:
 
 Under `<remote.output.path>/`:
 
-- `inputs/<run_uuid>/` — Preprocess outputs handed to the WRF stage: `namelist.input`, `namelist.wps`, `wrfinput_d*`, `wrfbdy_d*`, `wrffdda_d*` (FDDA only), `wrflowinp_d*` (some SST options only), `trmask_d*` (WVT only). Purged after successful WRF if `cleanup_inputs=true`.
+- `inputs/<run_uuid>/` — Preprocess outputs handed to the WRF stage: `namelist.input`, `namelist.wps`, `wrfinput_d*`, `wrfbdy_d*`, `wrffdda_d*` (FDDA only), `wrflowinp_d*` (some SST options only), `trmask_d*` (WVT only), `wrfrst_d*_<TIMESTAMP>` (restart only — only the latest per domain). Purged after successful WRF if `cleanup_inputs=true` AND NOT `restart_stop_after_upload`.
 - `<run_uuid>/wrfout*` — Main WRF output files (uploaded by `monitor_wrf` during the run, deleted locally after upload).
 - `logs/<run_uuid>/rsl.*` — `rsl.error.*` / `rsl.out.*` from `real.exe` / `ndown.exe` / `wrf.exe` failures.
 
@@ -99,10 +115,11 @@ Under `<remote.output.path>/`:
 
 All Python modules live under `wrf-auto-runs/`.
 
-- **`params.py`** — Central config loader. Reads `parameters.toml`, detects Docker vs local mode (`[no_docker]` section), supports env var overrides (`start_date`, `end_date`, `domains`, `n_cores`, `n_cores_preprocess`, `duration_hours`, `wrf_only`, `preprocess_only`, `cleanup_inputs`, `run_uuid`). All other scripts import `params` for paths and settings.
+- **`params.py`** — Central config loader. Reads `parameters.toml`, detects Docker vs local mode (`[no_docker]` section), supports env var overrides (`start_date`, `end_date`, `domains`, `n_cores`, `n_cores_preprocess`, `duration_hours`, `wrf_only`, `preprocess_only`, `cleanup_inputs`, `run_uuid`, `restart_enable`, `restart_interval_days`, `restart_stop_after_upload`). All other scripts import `params` for paths and settings.
 - **`defaults.py`** — Default namelist values for WPS and WRF. Defines field classification sets (`GEOGRID_ARRAY_FIELDS`, `DOMAINS_PER_DOMAIN_FIELDS`, etc.) and pipeline key sets (`DOMAINS_PIPELINE_KEYS`, `TIME_CONTROL_PIPELINE_KEYS`) that distinguish pipeline-consumed keys from WRF passthrough keys.
 - **`set_params.py`** — Namelist management. Reads/writes Fortran namelists (`namelist.wps`, `namelist.input`) using `f90nml`. Handles domain subsetting/renumbering, time parameter injection, output stream configuration, and computes `time_step = dx * 0.001 * 6`. Uses `apply_overrides()` to merge TOML sections into WRF namelist sections.
-- **`upload_namelists.py`** — Despite the name, this module owns the entire `inputs/<run_uuid>/` S3 prefix lifecycle: `upload_run_inputs`, `download_run_inputs`, `cleanup_run_inputs`.
+- **`upload_namelists.py`** — Despite the name, this module owns the entire `inputs/<run_uuid>/` S3 prefix lifecycle: `upload_run_inputs`, `download_run_inputs`, `cleanup_run_inputs`. Also owns the wrfrst lifecycle helpers used by `monitor_wrf`: `upload_wrfrst`, `cleanup_prior_wrfrst`, `detect_restart_state`, `parse_wrfrst_timestamp`.
+- **`set_params.py`** — Also exposes `apply_restart_namelist(restart_time, restart_interval_minutes, end_date_override=None)` for the wrf_only restart flow. Mirrors the existing `set_ndown_params` / `update_metgrid_levels` pattern of in-place f90nml edits.
 - **`utils.py`** — Shared utilities: rclone config creation, output file querying/renaming/uploading, variable filtering via `ncks`, domain projection recalculation (`pyproj`).
 - **`monitor_wrf.py`** — Runs `wrf.exe` and polls every 60s for completed output files, uploads them via rclone, and deletes local copies. On failure, uploads `rsl.*` log files.
 

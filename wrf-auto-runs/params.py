@@ -69,6 +69,15 @@ if 'preprocess_only' in os.environ:
 if 'cleanup_inputs' in os.environ:
     file['cleanup_inputs'] = os.environ['cleanup_inputs'].lower() in ('true', '1', 'yes')
 
+if 'restart_enable' in os.environ:
+    file.setdefault('restart', {})['enable'] = os.environ['restart_enable'].lower() in ('true', '1', 'yes')
+
+if 'restart_interval_days' in os.environ:
+    file.setdefault('restart', {})['interval_days'] = int(os.environ['restart_interval_days'])
+
+if 'restart_stop_after_upload' in os.environ:
+    file.setdefault('restart', {})['stop_after_upload'] = os.environ['restart_stop_after_upload'].lower() in ('true', '1', 'yes')
+
 ## Resolve output presets + user variables into a single list
 _preset_vars = set()
 if 'output_presets' in file:
@@ -98,6 +107,19 @@ n_cores_preprocess = int(file.get('n_cores_preprocess', 4))
 
 if preprocess_only and wrf_only:
     raise ValueError('preprocess_only and wrf_only are mutually exclusive — set at most one to true.')
+
+# [restart] section — config for chunked WRF runs (see plan: Phase 2 restart support).
+_restart_cfg = file.get('restart', {})
+restart_enable = bool(_restart_cfg.get('enable', False))
+restart_interval_days = _restart_cfg.get('interval_days')
+restart_stop_after_upload = bool(_restart_cfg.get('stop_after_upload', False))
+
+if restart_enable and restart_interval_days is None:
+    raise ValueError('[restart].interval_days is required when [restart].enable = true')
+if restart_stop_after_upload and not restart_enable:
+    raise ValueError('[restart].stop_after_upload requires [restart].enable = true')
+if restart_interval_days is not None:
+    restart_interval_days = int(restart_interval_days)
 
 sst_source = file.get('sst', {}).get('source', 'era5')
 if sst_source not in ('era5', 'cci'):

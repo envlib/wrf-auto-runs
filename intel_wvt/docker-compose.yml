@@ -5,7 +5,7 @@ services:
     build:
       context: ../
       dockerfile: intel_wvt/Dockerfile
-    image: mullenkamp/wrf-auto-runs-intel-wvt:1.6
+    image: mullenkamp/wrf-auto-runs-intel-wvt:1.7
     shm_size: '1gb'
     volumes:
         - "./parameters.toml:/app/parameters.toml"

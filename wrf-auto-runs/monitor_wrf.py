@@ -16,6 +16,7 @@ from time import sleep
 
 import params
 import utils
+from upload_namelists import upload_wrfrst, cleanup_prior_wrfrst, parse_wrfrst_timestamp
 
 ############################################
 ### Parameters
@@ -31,7 +32,7 @@ import utils
 ### Functions
 
 
-def monitor_wrf(outputs, end_date, run_uuid, rename_dict):
+def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
     """
 
     """
@@ -61,7 +62,10 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict):
 
     check = p.poll()
     while check is None:
-        files = utils.query_out_files(run_path, outputs)
+        # Glob mode (out_files=None) — accept any wrfout/wrfxtrm/wrfzlevels file regardless of
+        # timestamp. Necessary for restart chunks where WRF's first wrfout is offset from
+        # chunk_start by history_interval (e.g. a Feb13 chunk's first file is named ..._03:00:00).
+        files = utils.query_out_files(run_path)
 
         files = utils.select_files_to_ul(files, 1)
 
@@ -72,6 +76,11 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict):
             files = utils.rename_files(files, rename_dict)
             utils.ul_output_files(files, run_path, name, out_path, params.config_path)
 
+        # wrfrst polling — upload all but the newest per domain (newest may be in-progress).
+        # Mirrors the select_files_to_ul(min_files=1) pattern used for wrfout.
+        if out_path is not None:
+            _upload_stable_wrfrst(run_path, run_uuid, keep_newest=True)
+
         sleep(60)
         check = p.poll()
 
@@ -79,14 +88,22 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict):
     results_str = utils.read_last_line(wrf_log_path)
 
     if 'SUCCESS COMPLETE WRF' in results_str:
-        files = utils.query_out_files(run_path, outputs, True)
+        # Glob mode — see comment in the poll loop above.
+        files = utils.query_out_files(run_path, include_xtrm=True)
 
-        # if end_date.hour == 0:
-        #     files = utils.select_files_to_ul(files, 1)
-        # else:
-        #     files = utils.select_files_to_ul(files, 0)
-
-        files = utils.select_files_to_ul(files, 0)
+        # Skip the chunk_end single-frame wrfout when the chunk's actual end falls exactly at
+        # midnight (00:00:00). Such a file is a "deceptive partial day" — same filename pattern
+        # as a new day file but contains only the rollover frame. Either (a) the next chunk
+        # clobbers it with a full 8-frame version on restart, or (b) it's the final chunk and
+        # the rollover frame is also captured in wrfrst. When the chunk end is mid-day (e.g.
+        # end_date=2023-02-15 03:00:00), the final wrfout file contains multiple frames of
+        # legitimate end-of-simulation data, so upload it.
+        effective_end = chunk_end if chunk_end is not None else end_date
+        skip_chunk_end_partial = (
+            effective_end.hour == 0 and effective_end.minute == 0 and effective_end.second == 0
+        )
+        min_files = 1 if skip_chunk_end_partial else 0
+        files = utils.select_files_to_ul(files, min_files)
 
         if files and out_path is not None:
             if params.output_variables:
@@ -94,6 +111,10 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict):
                 utils.filter_variables(files, params.output_variables)
             files = utils.rename_files(files, rename_dict)
             utils.ul_output_files(files, run_path, name, out_path, params.config_path)
+
+        # Final wrfrst upload — wrf has exited cleanly so all wrfrst files are complete.
+        if out_path is not None:
+            _upload_stable_wrfrst(run_path, run_uuid, keep_newest=False)
 
         return True
     else:
@@ -112,6 +133,69 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict):
             p = subprocess.run(cmd_list, capture_output=True, text=True, check=True)
 
         raise ValueError(f'wrf.exe failed. Look at the logs for details: {results_str}')
+
+
+_WRFRST_MTIME_STABLE_SECONDS = 60
+
+
+def _upload_stable_wrfrst(run_path, run_uuid, keep_newest):
+    """Upload wrfrst files from run_path to inputs/<run_uuid>/, then cleanup older ones on S3.
+
+    keep_newest=True (poll loop): per domain, upload (a) any older wrfrst (definitely complete
+        because a newer one exists) AND (b) the newest wrfrst if its mtime has been stable for
+        at least _WRFRST_MTIME_STABLE_SECONDS — the write is finished. Without the mtime check,
+        a single wrfrst with no newer successor would sit locally until the next restart_interval
+        (potentially hours/days of wallclock).
+    keep_newest=False (post-loop after wrf SUCCESS): upload everything — wrf has exited so all
+        are complete; no mtime check needed.
+
+    After uploading, deletes prior wrfrst files from S3 (keeping only the latest) and removes
+    uploaded files from local disk. Does nothing if no wrfrst files are present.
+    """
+    import time
+
+    wrfrst_local = sorted(run_path.glob('wrfrst_d*'))
+    if not wrfrst_local:
+        return
+
+    by_domain = {}
+    for f in wrfrst_local:
+        # filename: wrfrst_d<NN>_<TIMESTAMP> — second underscore-separated token is the domain id
+        parts = f.name.split('_')
+        if len(parts) < 4:
+            continue
+        domain = parts[1]
+        by_domain.setdefault(domain, []).append(f)
+
+    now = time.time()
+    to_upload = []
+    for domain, files in by_domain.items():
+        files.sort()
+        if keep_newest:
+            # All but the newest are guaranteed complete (a newer one exists).
+            to_upload.extend(files[:-1])
+            # The newest is also complete if its mtime has been stable for the threshold.
+            newest = files[-1]
+            try:
+                age = now - newest.stat().st_mtime
+            except FileNotFoundError:
+                age = 0
+            if age >= _WRFRST_MTIME_STABLE_SECONDS:
+                to_upload.append(newest)
+        else:
+            to_upload.extend(files)
+
+    if not to_upload:
+        return
+
+    upload_wrfrst(run_uuid, to_upload)
+    latest_ts = max(parse_wrfrst_timestamp(f.name) for f in to_upload)
+    cleanup_prior_wrfrst(run_uuid, latest_ts)
+    for f in to_upload:
+        try:
+            f.unlink()
+        except FileNotFoundError:
+            pass
 
 
 

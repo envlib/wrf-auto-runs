@@ -32,6 +32,23 @@ n_cores = 8
 # or to make a run reproducible by uuid. Precedence: env var > toml > newly generated.
 # run_uuid = "abc1234567def"
 
+# Restart support — write wrfrst files at a fixed interval and continue from them on the next
+# wrf_only run. wrfrst files are uploaded to inputs/<run_uuid>/ alongside the other init artifacts;
+# only the latest wrfrst per domain is kept on S3 (older ones are deleted as new ones upload).
+# When wrf_only mode starts, the pipeline checks inputs/<run_uuid>/ for wrfrst files; if any are
+# present, it configures wrf.exe for a restart (start_date overridden to the wrfrst timestamp);
+# otherwise a cold start. Useful for chunking long simulations across multiple SLURM jobs.
+#
+# [restart]
+# enable = true                 # default false
+# interval_days = 7             # required when enable = true. wrf writes a wrfrst every N days.
+# stop_after_upload = false     # default false. When true, this WRF invocation runs ~interval_days then exits
+#                                 (achieved by overriding end_date in the namelist; no signal handling).
+#                                 Useful for chaining multiple sbatch jobs under per-job time limits.
+#                                 NOTE: stop_after_upload=true also disables auto-cleanup of inputs/<run_uuid>/
+#                                 (regardless of cleanup_inputs) — multiple sbatch jobs share the prefix, so
+#                                 you must manually purge it after confirming the full simulation finished.
+
 # Named variable presets for common downstream tools. String or list of strings.
 # Variables from all selected presets are merged together.
 # Available presets: "wrf_to_int" (variables needed by the wrf_to_int tool).

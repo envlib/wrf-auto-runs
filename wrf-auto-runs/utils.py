@@ -75,22 +75,44 @@ def read_last_line(file_path):
     return p.stdout.strip('\n')
 
 
-def query_out_files(run_path, out_files, include_xtrm=False):
-    """
+def query_out_files(run_path, out_files=None, include_xtrm=False):
+    """Find WRF output files in run_path, grouped by (out_name, domain) and sorted by name.
 
+    out_files: optional iterable of expected filenames. When provided, only files whose name
+        is in this set are returned (legacy/exact-match mode). When None, glob-match against
+        the known output prefixes (wrfout_d, wrfxtrm_d, wrfzlevels_d) — needed for restart
+        runs where WRF's first wrfout may be offset by history_interval and therefore won't
+        appear in a cold-start-derived expected list.
+    include_xtrm: when False, skip wrfxtrm files entirely.
     """
+    out_files_set = set(out_files) if out_files is not None else None
     files = {}
     for file_path in run_path.iterdir():
-        if file_path.is_file():
-            file_name = file_path.name
-            if file_name in out_files:
-                out_name, domain, datetime = file_name.split('_', 2)
-                if (out_name == 'wrfxtrm' and include_xtrm) or out_name != 'wrfxtrm':
-                    if (out_name, domain) in files:
-                        files[(out_name, domain)].append(str(file_path))
-                        files[(out_name, domain)].sort()
-                    else:
-                        files[(out_name, domain)] = [str(file_path)]
+        if not file_path.is_file():
+            continue
+        file_name = file_path.name
+
+        if out_files_set is not None:
+            # Legacy exact-match mode.
+            if file_name not in out_files_set:
+                continue
+        else:
+            # Glob mode — accept any wrfout / wrfxtrm / wrfzlevels file.
+            if not (file_name.startswith('wrfout_d')
+                    or file_name.startswith('wrfxtrm_d')
+                    or file_name.startswith('wrfzlevels_d')):
+                continue
+
+        try:
+            out_name, domain, _datetime = file_name.split('_', 2)
+        except ValueError:
+            continue
+
+        if out_name == 'wrfxtrm' and not include_xtrm:
+            continue
+
+        files.setdefault((out_name, domain), []).append(str(file_path))
+        files[(out_name, domain)].sort()
 
     return files
 

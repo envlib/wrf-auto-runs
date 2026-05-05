@@ -35,7 +35,7 @@ A two-service compose file with `depends_on: condition: service_completed_succes
 # docker-compose.yml
 services:
   preprocess:
-    image: mullenkamp/wrf-auto-runs-wvt:1.6
+    image: mullenkamp/wrf-auto-runs-wvt:1.7
     environment:
       - run_uuid=${RUN_UUID:?}
       - preprocess_only=true
@@ -45,7 +45,7 @@ services:
       - ~/WPS_GEOG:/WPS_GEOG
       - ~/data/wrf/tests/test_wvt_preprocess:/data
   wrf:
-    image: mullenkamp/wrf-auto-runs-intel-wvt:1.6
+    image: mullenkamp/wrf-auto-runs-intel-wvt:1.7
     environment:
       - run_uuid=${RUN_UUID:?}
       - wrf_only=true
@@ -109,7 +109,20 @@ All settings live in `parameters.toml`. See `parameters_example.toml` for a full
 - **`preprocess_only`** — Run preprocessing through `real.exe`, upload `inputs/<run_uuid>/` to S3, exit. Mutually exclusive with `wrf_only`.
 - **`wrf_only`** — Skip preprocessing, download `inputs/<run_uuid>/` from S3, run `wrf.exe`. Requires `run_uuid` to be set (env or TOML).
 - **`cleanup_inputs`** — Default `true`. Single cleanup knob: deletes intermediate preprocessing files (met_em, ERA5 NetCDF, WPS int files) locally as the run progresses, AND purges `inputs/<run_uuid>/` from S3 after a successful WRF run. Set to `false` to keep everything for inspection.
-- **`run_uuid`** — Optional 13-char hex identifier for the run. Normally generated fresh per run; set explicitly to re-run a `wrf_only` stage against an existing `inputs/<run_uuid>/` prefix. Precedence: env var > TOML > generated.
+- **`run_uuid`** — Optional 13-char hex identifier for the run. Normally generated fresh per run; set explicitly to re-run a `wrf_only` stage against an existing `inputs/<run_uuid>/` prefix, or to make a run reproducible by uuid. Precedence: env var > TOML > generated.
+
+### `[restart]`
+
+Optional. Enables WRF to write `wrfrst` files at a configurable interval and continue from them on subsequent `wrf_only` invocations. Designed for long simulations (e.g. 13-month runs) split across multiple SLURM jobs subject to per-job time limits.
+
+- **`enable`** (default `false`) — Master switch.
+- **`interval_days`** (required when `enable=true`) — WRF `restart_interval` is set to `interval_days * 24 * 60` minutes. The wrf_only stage writes a wrfrst at every boundary and uploads it to `inputs/<run_uuid>/` (only the latest per domain is kept on S3; older ones are deleted automatically).
+- **`stop_after_upload`** (default `false`) — When true, each `wrf_only` invocation runs ~`interval_days` then exits cleanly. Designed for chaining: queue multiple `sbatch wrf.sl` jobs (manual or `--dependency=afterany`) reusing the same `RUN_UUID`. Each chunk picks up where the prior one left off via the wrfrst on S3. When true, **disables auto-cleanup of `inputs/<run_uuid>/` regardless of `cleanup_inputs`** — multiple sbatch jobs share the prefix; you manually purge after the simulation completes.
+
+Notes on chunked-run behaviour:
+
+- `apply_restart_namelist` automatically sets `write_hist_at_0h_rst=.true.` so each restart chunk writes a wrfout frame at chunk_start; combined with WRF's `NF_CLOBBER` open-for-write semantics, the next chunk's full 8-frame wrfout file overwrites the prior chunk's 1-frame placeholder at the same filename. Net effect: `Feb13_00:00:00.nc`, `Feb14_00:00:00.nc`, etc. all end up as 8-frame day files after the chain finishes.
+- The wrfout file at chunk_end IS skipped on upload when chunk_end falls exactly at midnight (00:00:00) — that file is a "deceptive partial day" containing just the rollover frame, which is captured either in the next chunk's clobber or in the final chunk's wrfrst. Mid-day end_dates produce non-deceptive multi-frame final files and are uploaded normally.
 - **`output_presets`** — Optional string or list of named variable presets (e.g. `'wrf_to_int'`). Each preset expands to the set of wrfout variables required by the named tool. Variables from all selected presets are merged together.
 - **`output_variables`** — Optional list of additional wrfout variables to retain. Merged with any preset variables. Coordinate and auxiliary 3D variables are included automatically. Comment out both `output_presets` and `output_variables` to keep all variables.
 
@@ -239,7 +252,7 @@ Under `[remote.output].path`:
 
 | Prefix | Contents | Lifetime |
 |---|---|---|
-| `inputs/<run_uuid>/` | `namelist.input`, `namelist.wps`, `wrfinput_d*`, `wrfbdy_d*`, `wrffdda_d*`, `wrflowinp_d*`, `trmask_d*` | Created by preprocess; consumed by wrf-only; purged after successful WRF if `cleanup_inputs=true` |
+| `inputs/<run_uuid>/` | `namelist.input`, `namelist.wps`, `wrfinput_d*`, `wrfbdy_d*`, `wrffdda_d*`, `wrflowinp_d*`, `trmask_d*`, `wrfrst_d*_<TIMESTAMP>` (restart only — only the latest per domain) | Created by preprocess; consumed by wrf-only; purged after successful WRF if `cleanup_inputs=true` AND NOT `restart.stop_after_upload` |
 | `<run_uuid>/wrfout*` | Main WRF output files | Uploaded during `monitor_wrf`; persisted |
 | `logs/<run_uuid>/rsl.*` | `rsl.error.*` / `rsl.out.*` from failed `real.exe` / `ndown.exe` / `wrf.exe` | Uploaded only on failure |
 
@@ -257,8 +270,8 @@ All output files are uploaded to `[remote.output]` during the run and deleted lo
 
 | Image | Compiler | WPS | Use |
 |---|---|---|---|
-| `mullenkamp/wrf-auto-runs-wvt:1.6` | gfortran | dmpar | Preprocess stage (parallel metgrid). Also fine for single-stage short runs. |
-| `mullenkamp/wrf-auto-runs-intel-wvt:1.6` | Intel oneAPI | serial | WRF stage (faster `wrf.exe`). Also fine for single-stage runs where WRF dominates. |
+| `mullenkamp/wrf-auto-runs-wvt:1.7` | gfortran | dmpar | Preprocess stage (parallel metgrid). Also fine for single-stage short runs. |
+| `mullenkamp/wrf-auto-runs-intel-wvt:1.7` | Intel oneAPI | serial | WRF stage (faster `wrf.exe`). Also fine for single-stage runs where WRF dominates. |
 | `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | Non-WVT variant. |
 
 ## Project Structure

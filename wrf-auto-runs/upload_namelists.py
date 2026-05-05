@@ -16,6 +16,8 @@ import shlex
 import subprocess
 import copy
 
+import pendulum
+
 import params, utils
 
 
@@ -42,8 +44,8 @@ def upload_run_inputs(run_uuid):
     out_path, name, config_path = resolved
 
     dest_str = f'{name}:{out_path}/inputs/{run_uuid}/'
-    # --copy-links: follow symlinks. trmask_d* in run_path are symlinks to ../trmask_d*
-    # (created by run_real); without -L, rclone silently skips them.
+    # --copy-links: follow symlinks. namelist.input/wps and trmask_d* in run_path are symlinks
+    # to data_path (created by run_real); without -L, rclone silently skips them.
     cmd_str = (
         f'rclone copy {params.run_path} {dest_str} '
         f'--config={config_path} --no-traverse --no-check-dest --copy-links '
@@ -93,6 +95,7 @@ def download_run_inputs(run_uuid):
         f'--include "wrfinput_d*" --include "wrfbdy_d*" '
         f'--include "wrffdda_d*" --include "wrflowinp_d*" '
         f'--include "trmask_d*" '
+        f'--include "wrfrst_d*" '
         f'--include "namelist.input" --transfers=4'
     )
     cmd_list = shlex.split(cmd_str)
@@ -106,6 +109,81 @@ def download_run_inputs(run_uuid):
         raise ValueError(f'No wrfinput_d* files downloaded from {src_str} — preprocess stage may not have uploaded them.')
 
     return True
+
+
+def parse_wrfrst_timestamp(file_name):
+    """Parse YYYY-MM-DD_HH:MM:SS out of a wrfrst_d<NN>_<TIMESTAMP> filename. Returns naive pendulum datetime."""
+    # Format: wrfrst_d01_2023-01-02_00:00:00 — split on underscores, last two parts are <DATE>_<TIME>
+    base = pathlib.Path(file_name).stem if '.' in file_name else file_name
+    parts = base.split('_')
+    if len(parts) < 4:
+        raise ValueError(f'Unexpected wrfrst filename format: {file_name}')
+    ts_str = f'{parts[-2]}_{parts[-1]}'  # YYYY-MM-DD_HH:MM:SS
+    # Naive datetime to match set_nml_params() return values used elsewhere in the pipeline.
+    return pendulum.from_format(ts_str, 'YYYY-MM-DD_HH:mm:ss').naive()
+
+
+def detect_restart_state():
+    """Scan params.run_path for wrfrst_d* files. Return latest pendulum timestamp, or None if none present."""
+    wrfrst_files = sorted(params.run_path.glob('wrfrst_d*'))
+    if not wrfrst_files:
+        return None
+    timestamps = [parse_wrfrst_timestamp(f.name) for f in wrfrst_files]
+    return max(timestamps)
+
+
+def upload_wrfrst(run_uuid, file_paths):
+    """Upload a list of local wrfrst files to inputs/<run_uuid>/. No rename — kept in internal d01 numbering."""
+    if not file_paths:
+        return
+    resolved = _resolve_remote_output()
+    if resolved is None:
+        return
+    out_path, name, config_path = resolved
+
+    dest_str = f'{name}:{out_path}/inputs/{run_uuid}/'
+    # Use --files-from-raw with the basenames; rclone copy resolves relative to the source dir.
+    files_from = '\n'.join(pathlib.Path(p).name for p in file_paths)
+    cmd_str = (
+        f'rclone copy {params.run_path} {dest_str} '
+        f'--config={config_path} --no-traverse --no-check-dest --copy-links '
+        f'--files-from-raw - --transfers=4'
+    )
+    cmd_list = shlex.split(cmd_str)
+    p = subprocess.run(cmd_list, input=files_from, capture_output=True, text=True, check=False)
+    if p.returncode != 0:
+        raise ValueError(f'upload_wrfrst failed:\n{p.stderr}')
+    return True
+
+
+def cleanup_prior_wrfrst(run_uuid, keep_timestamp):
+    """Delete wrfrst_d* on S3 with timestamp < keep_timestamp. Best-effort — logs but doesn't raise."""
+    resolved = _resolve_remote_output()
+    if resolved is None:
+        return
+    out_path, name, config_path = resolved
+
+    list_cmd = f'rclone lsf {name}:{out_path}/inputs/{run_uuid}/ --include "wrfrst_d*" --config={config_path}'
+    p = subprocess.run(shlex.split(list_cmd), capture_output=True, text=True, check=False)
+    if p.returncode != 0:
+        print(f'-- cleanup_prior_wrfrst: lsf failed ({p.returncode}): {p.stderr.strip()}')
+        return
+
+    for line in p.stdout.splitlines():
+        fname = line.strip()
+        if not fname:
+            continue
+        try:
+            ts = parse_wrfrst_timestamp(fname)
+        except ValueError:
+            continue
+        if ts < keep_timestamp:
+            del_cmd = f'rclone deletefile {name}:{out_path}/inputs/{run_uuid}/{fname} --config={config_path}'
+            dp = subprocess.run(shlex.split(del_cmd), capture_output=True, text=True, check=False)
+            if dp.returncode != 0:
+                print(f'-- cleanup_prior_wrfrst: warning, failed to delete {fname}: {dp.stderr.strip()}')
+            else:
+                print(f'-- cleanup_prior_wrfrst: deleted {fname} (older than {keep_timestamp})')
 
 
 def cleanup_run_inputs(run_uuid):
