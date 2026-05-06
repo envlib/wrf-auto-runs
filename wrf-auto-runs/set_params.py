@@ -467,7 +467,7 @@ def set_nml_params(domains=None):
     wrf_tc['input_from_file'] = [True] * n_domains
 
     ## prec_acc_dt
-    physics['prec_acc_dt'] = history_interval_nml
+    # physics['prec_acc_dt'] = history_interval_nml
 
     ## Noah-MP symlink
     surface_physics = physics.get('sf_surface_physics', 4)
