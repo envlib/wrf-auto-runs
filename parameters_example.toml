@@ -32,22 +32,36 @@ n_cores = 8
 # or to make a run reproducible by uuid. Precedence: env var > toml > newly generated.
 # run_uuid = "abc1234567def"
 
-# Restart support — write wrfrst files at a fixed interval and continue from them on the next
-# wrf_only run. wrfrst files are uploaded to inputs/<run_uuid>/ alongside the other init artifacts;
-# only the latest wrfrst per domain is kept on S3 (older ones are deleted as new ones upload).
-# When wrf_only mode starts, the pipeline checks inputs/<run_uuid>/ for wrfrst files; if any are
-# present, it configures wrf.exe for a restart (start_date overridden to the wrfrst timestamp);
-# otherwise a cold start. Useful for chunking long simulations across multiple SLURM jobs.
+# Restart support — chunked simulations with wrfrst checkpoints.
+#
+# When [restart].enable = true (and neither preprocess_only nor wrf_only is set), the pipeline runs
+# in UNIFIED PER-CHUNK mode: each container invocation does its own preprocess + WRF for ONE chunk
+# of duration interval_days. Only wrfrst (chunk handoff) and namelists (debug archive) persist on S3
+# at inputs/<run_uuid>/. wrfbdy/wrffdda/wrfinput/wrflowinp/trmask are local-only — never uploaded —
+# which avoids hours of redundant network transfer for long runs (wrffdda alone can be ~200 GB
+# for a 13-month simulation).
+#
+# Two execution modes share the chunk-aware logic:
+#   - stop_after_upload=true: container exits after one chunk. SLURM (or user) submits N copies
+#     with --dependency=afterany. Each new container reads any prior wrfrst from S3 and processes
+#     its chunk. Designed for long simulations exceeding per-job SLURM time limits.
+#   - stop_after_upload=false: container loops internally through all chunks until sim_end.
+#     Best for local docker-compose dev where one command runs the whole simulation.
+#
+# Chunk boundaries are auto-detected from the latest wrfrst on S3 — no env vars to compute.
+# Each chunk's preprocess pulls only its own ERA5 window.
+#
+# Note: preprocess_only / wrf_only modes still work (Phase 1/2 split-pipeline pattern); to opt
+# into unified per-chunk mode, leave both unset and set [restart].enable = true.
 #
 # [restart]
 # enable = true                 # default false
-# interval_days = 7             # required when enable = true. wrf writes a wrfrst every N days.
-# stop_after_upload = false     # default false. When true, this WRF invocation runs ~interval_days then exits
-#                                 (achieved by overriding end_date in the namelist; no signal handling).
-#                                 Useful for chaining multiple sbatch jobs under per-job time limits.
-#                                 NOTE: stop_after_upload=true also disables auto-cleanup of inputs/<run_uuid>/
-#                                 (regardless of cleanup_inputs) — multiple sbatch jobs share the prefix, so
-#                                 you must manually purge it after confirming the full simulation finished.
+# interval_days = 7             # required when enable = true. WRF writes a wrfrst every N sim days.
+# stop_after_upload = false     # default false. true = exit after one chunk (SLURM chained pattern);
+#                                 false = loop internally through all chunks until sim_end.
+#                                 NOTE: stop_after_upload=true also disables auto-cleanup of
+#                                 inputs/<run_uuid>/ (regardless of cleanup_inputs) — multiple
+#                                 invocations share the prefix; manually purge after the chain completes.
 
 # Named variable presets for common downstream tools. String or list of strings.
 # Variables from all selected presets are merged together.

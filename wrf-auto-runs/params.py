@@ -121,6 +121,19 @@ if restart_stop_after_upload and not restart_enable:
 if restart_interval_days is not None:
     restart_interval_days = int(restart_interval_days)
 
+
+def set_chunk_dates(chunk_start, chunk_end):
+    """Override start_date/end_date in params.file for the current chunk window.
+
+    Used by the unified per-chunk pipeline (Phase 3). The next set_nml_params() call
+    picks up these values; downstream functions (dl_era5, run_metgrid, etc.) read the
+    return values, so a single set_nml_params call after this is sufficient.
+    """
+    file['time_control']['start_date'] = chunk_start.strftime('%Y-%m-%d %H:%M:%S')
+    file['time_control']['end_date'] = chunk_end.strftime('%Y-%m-%d %H:%M:%S')
+    # Clear duration_hours if set, so end_date takes precedence in set_nml_params.
+    file['time_control'].pop('duration_hours', None)
+
 sst_source = file.get('sst', {}).get('source', 'era5')
 if sst_source not in ('era5', 'cci'):
     raise ValueError(f"[sst].source must be 'era5' or 'cci', got {sst_source!r}")

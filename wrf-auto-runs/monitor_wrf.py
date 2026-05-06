@@ -58,6 +58,8 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
     resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
     cmd_str = f'mpirun -np {n_cores} ./wrf.exe'
     cmd_list = shlex.split(cmd_str)
+    import time as _time
+    wrf_start_time = _time.time()
     p = subprocess.Popen(cmd_list, cwd=run_path)
 
     check = p.poll()
@@ -78,8 +80,10 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
 
         # wrfrst polling — upload all but the newest per domain (newest may be in-progress).
         # Mirrors the select_files_to_ul(min_files=1) pattern used for wrfout.
+        # min_mtime gates out the pre-existing restart-seed wrfrst (downloaded before wrf.exe
+        # launched on chunks 2+) so we don't re-upload it.
         if out_path is not None:
-            _upload_stable_wrfrst(run_path, run_uuid, keep_newest=True)
+            _upload_stable_wrfrst(run_path, run_uuid, keep_newest=True, min_mtime=wrf_start_time)
 
         sleep(60)
         check = p.poll()
@@ -113,8 +117,9 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
             utils.ul_output_files(files, run_path, name, out_path, params.config_path)
 
         # Final wrfrst upload — wrf has exited cleanly so all wrfrst files are complete.
+        # min_mtime still gates out the pre-existing restart-seed wrfrst.
         if out_path is not None:
-            _upload_stable_wrfrst(run_path, run_uuid, keep_newest=False)
+            _upload_stable_wrfrst(run_path, run_uuid, keep_newest=False, min_mtime=wrf_start_time)
 
         return True
     else:
@@ -138,7 +143,7 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
 _WRFRST_MTIME_STABLE_SECONDS = 60
 
 
-def _upload_stable_wrfrst(run_path, run_uuid, keep_newest):
+def _upload_stable_wrfrst(run_path, run_uuid, keep_newest, min_mtime=0):
     """Upload wrfrst files from run_path to inputs/<run_uuid>/, then cleanup older ones on S3.
 
     keep_newest=True (poll loop): per domain, upload (a) any older wrfrst (definitely complete
@@ -147,7 +152,10 @@ def _upload_stable_wrfrst(run_path, run_uuid, keep_newest):
         a single wrfrst with no newer successor would sit locally until the next restart_interval
         (potentially hours/days of wallclock).
     keep_newest=False (post-loop after wrf SUCCESS): upload everything — wrf has exited so all
-        are complete; no mtime check needed.
+        are complete; no stability check needed.
+    min_mtime: float (epoch seconds). Skip any wrfrst whose mtime is older than this threshold —
+        used to filter out pre-existing restart-seed wrfrst (downloaded into run_path before
+        wrf.exe started). Pass `wrf_start_time` to gate out the seed file on chunks 2+.
 
     After uploading, deletes prior wrfrst files from S3 (keeping only the latest) and removes
     uploaded files from local disk. Does nothing if no wrfrst files are present.
@@ -157,6 +165,13 @@ def _upload_stable_wrfrst(run_path, run_uuid, keep_newest):
     wrfrst_local = sorted(run_path.glob('wrfrst_d*'))
     if not wrfrst_local:
         return
+
+    # Filter out seed files (mtime < min_mtime) — these are pre-existing restart inputs, not
+    # outputs of the current wrf.exe run. Don't re-upload them.
+    if min_mtime > 0:
+        wrfrst_local = [f for f in wrfrst_local if f.stat().st_mtime >= min_mtime]
+        if not wrfrst_local:
+            return
 
     by_domain = {}
     for f in wrfrst_local:

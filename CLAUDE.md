@@ -6,32 +6,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Automated pipeline to run the WRF (Weather Research and Forecasting) model using ERA5 reanalysis data or WRF output as boundary/initial conditions. Runs inside a Docker container with WRF 4.7.1-ARW and WPS 4.6.0 pre-installed. All configuration is driven by a single `parameters.toml` file (gitignored; see `parameters_example.toml`).
 
-The pipeline supports three execution modes selected by TOML/env flags:
+The pipeline supports four execution modes selected by TOML/env flags:
 
-- **Single-stage** (default): full pipeline end-to-end in one container.
-- **Preprocess-only**: runs steps through `real.exe`, then uploads run inputs to S3 `inputs/<run_uuid>/`. Hands off to a separate WRF stage.
-- **WRF-only**: downloads run inputs from `inputs/<run_uuid>/` and runs `wrf.exe`. Mutually exclusive with preprocess-only.
+- **Unified per-chunk** (default for production): set `[restart].enable=true` (without `preprocess_only` or `wrf_only`). Each invocation runs its OWN preprocess + WRF for one chunk of duration `interval_days`. wrfbdy/wrffdda/wrfinput/wrflowinp/trmask are local-only — never round-trip through S3. Only wrfrst + namelists persist on S3. With `stop_after_upload=true` the container exits after one chunk (SLURM chained pattern); with `stop_after_upload=false` the container loops internally until sim_end (local-dev pattern).
+- **Single-stage**: full pipeline end-to-end in one container. Fine for short runs that fit in one job; no restart support.
+- **Preprocess-only** (legacy split-pipeline): runs steps through `real.exe`, then uploads run inputs to S3 `inputs/<run_uuid>/`. Hands off to a separate WRF stage. Kept for backwards compat.
+- **WRF-only** (legacy split-pipeline): downloads run inputs from `inputs/<run_uuid>/` and runs `wrf.exe`. Mutually exclusive with preprocess-only.
 
-The split modes enable a SLURM dependency chain (preprocess job → WRF job via `--dependency=afterok`) so a long WRF simulation isn't tied to the preprocess scratch / hardware.
+Unified per-chunk is the standard workflow because per-chunk preprocess avoids the wrfbdy/wrffdda S3 round-trip that dominates wallclock for long FDDA-enabled runs (wrffdda is ~200 GB for a 13-month run; in split mode every chunk re-downloads the full file). Each chunk is a single SLURM job that does preprocess + WRF; chunks chain via `--dependency=afterany` and auto-detect their position from the latest wrfrst on S3.
 
 ## Image Matrix
 
 | Image | Compiler | WPS build | Use |
 |---|---|---|---|
-| `mullenkamp/wrf-auto-runs-wvt:1.7` | gfortran | dmpar | preprocess stage (parallel metgrid) and short single-stage runs |
-| `mullenkamp/wrf-auto-runs-intel-wvt:1.7` | Intel oneAPI | serial | WRF stage (faster `wrf.exe`) |
-| `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | non-WVT variant |
+| `mullenkamp/wrf-auto-runs-intel-wvt:1.8` | Intel oneAPI | dmpar | **Default for all modes** — unified per-chunk, single-stage, and the legacy split-pipeline WRF stage |
+| `mullenkamp/wrf-auto-runs-wvt:1.7` | gfortran | dmpar | Backup. Legacy split-pipeline preprocess stage; short single-stage runs |
+| `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | Non-WVT variant |
 
 Both WPS builds inject heap-array allocation flags (`-fno-stack-arrays` for gfortran, `-heap-arrays` for Intel) — required for stable long preprocessing runs (without them metgrid segfaults in libc partway through). See `~/.claude/projects/.../memory/wps_heap_arrays_requirement.md` and `wrf-docker-builds/CLAUDE.md`.
 
 ## Commands
 
 ```bash
-# Run full pipeline locally (Docker, single-stage)
-docker compose up
+# Unified per-chunk local run (Docker — restart.enable=true in parameters.toml).
+# stop_after_upload=false → one container loops through all chunks until sim_end.
+# stop_after_upload=true  → one container per chunk; ./run_local.sh re-runs with the same RUN_UUID.
+./run_local.sh                  # in a project dir with the unified-mode docker-compose.yml
 
-# Run split pipeline locally (preprocess → wrf via S3 handoff)
-./run_local.sh                 # in a project dir with the two-stage docker-compose.yml
+# Run full pipeline locally (Docker, single-stage — restart disabled)
+docker compose up
 
 # Run locally without Docker (requires [no_docker] section in parameters.toml)
 uv run wrf-auto-runs/main.py
@@ -46,6 +49,23 @@ uv run pytest                   # pytest wrf-auto-runs/tests/
 ```
 
 ## Pipeline Execution Order (`wrf-auto-runs/main.py`)
+
+### Unified per-chunk mode (default — `[restart].enable=true`, neither split flag set)
+
+`main.py:run_chunked_pipeline(run_uuid)` drives a chunk loop. Each iteration:
+
+1. `detect_remote_restart_state(run_uuid)` — `rclone lsf` against `inputs/<run_uuid>/`; finds the latest wrfrst timestamp on S3 (or None for chunk 1). Lightweight metadata read, no download.
+2. `chunk_start = restart_state if restart_state else sim_start`. If `chunk_start >= sim_end`, exit cleanly (simulation complete).
+3. `chunk_end = min(chunk_start + interval_days, sim_end)`.
+4. `params.set_chunk_dates(chunk_start, chunk_end)` — mutates `params.file['time_control']` so downstream `set_nml_params` calls read chunk-specific dates.
+5. Existing preprocess pipeline: `check_ndown_params` → `check_nml_params` → `set_nml_params` (twice, with `run_geogrid` between) → `create_trmask` (WVT only) → `dl_era5` / `dl_wrf` → `run_era5_to_int` / `run_wrf_to_int` → optional `process_sst_cci` → `run_metgrid` → `update_metgrid_levels` → `run_real`. `run_real` rmtrees `run_path`; we don't fight that — every iteration starts fresh.
+6. If `restart_state is not None`: `download_wrfrst_to_run_path(run_uuid)` pulls the prior chunk's wrfrst from S3 into the freshly-recreated run_path.
+7. `apply_restart_namelist(restart_state, restart_interval_minutes, end_date_override=chunk_end)` — always called (sets `restart_interval` and `write_hist_at_0h_rst=.true.` on chunk 1 too); on chunks 2+ also sets `restart=.true.` and `start_date*` = wrfrst timestamp, `override_restart_timers=.true.`. The `write_hist_at_0h_rst` flag forces wrf.exe to write a history frame at chunk_start so the next chunk's `Feb13_00:00:00.nc` clobbers any prior 1-frame version with a full 8-frame version. With `stop_after_upload=true`, also overrides `end_date*` to `chunk_end` so wrf.exe exits naturally at the chunk boundary (no SIGTERM).
+8. `upload_chunk_namelists(run_uuid)` — uploads ONLY namelist.input + namelist.wps to `inputs/<run_uuid>/` (debug archive). No wrf*input/bdy/fdda/lowinp/trmask uploads — those are local-only in this mode.
+9. `monitor_wrf(...)` — runs `wrf.exe` via `mpirun -n {n_cores}`; polls every 60s for completed wrfout / wrfxtrm / wrfzlevels / wrfrst files and uploads them.
+10. If `params.restart_stop_after_upload`: return (caller submits next chunk container). Else loop to step 1.
+
+### Single-stage / preprocess-only (legacy)
 
 When `wrf_only=false` (single-stage or preprocess-only), the pipeline runs:
 
@@ -66,14 +86,16 @@ When `wrf_only=false` (single-stage or preprocess-only), the pipeline runs:
 15. `upload_run_inputs()` — (preprocess-only) Upload `wrfinput_d*` / `wrfbdy_d*` / `wrffdda_d*` / `wrflowinp_d*` / `trmask_d*` / `namelist.input` / `namelist.wps` to `inputs/<run_uuid>/` on S3, then exit
 16. `monitor_wrf()` — Launch `wrf.exe` via `mpirun`, poll for output, upload files in real-time
 
+### WRF-only (legacy)
+
 When `wrf_only=true`:
 
 1. `derive_wrf_run_context()` — Re-compute `domains` / `outputs` / `start_date` / `end_date` / `rename_dict` from TOML
 2. `download_run_inputs(run_uuid)` — Download the inputs prefix from S3 into `params.run_path` (includes any prior `wrfrst_d*` files when restart is enabled)
 3. (if `[restart].enable=true`) `detect_restart_state()` — Scan `params.run_path` for any downloaded `wrfrst_d*` and parse the latest timestamp. `None` = cold-start chunk; otherwise restart from that wrfrst timestamp.
-4. (if `[restart].enable=true`) `apply_restart_namelist()` — In-place edit of `run_path/namelist.input` to set `restart=.true.`, `start_date*` = wrfrst timestamp, `restart_interval` = `interval_days * 24 * 60` minutes, `override_restart_timers=.true.` (timer counts from chunk_start), `write_hist_at_0h_rst=.true.` (forces wrf.exe to write a history frame at chunk_start so the next chunk's `Feb13_00:00:00.nc` clobbers any prior 1-frame version with a full 8-frame version). When `stop_after_upload=true`, also overrides `end_date*` to `min(chunk_start + interval_days, original_end_date)` so wrf.exe naturally exits at chunk_end without needing SIGTERM.
-5. `monitor_wrf()` — Run `wrf.exe`. Polls every 60s for completed wrfout / wrfrst files; uploads them as soon as detected.
-6. `cleanup_run_inputs(run_uuid)` — (if `cleanup_inputs=true` AND NOT `restart_stop_after_upload`) Purge `inputs/<run_uuid>/` from S3. `stop_after_upload=true` disables auto-cleanup because the prefix is shared across multiple chained sbatch jobs and premature deletion breaks the chain.
+4. (if `[restart].enable=true`) `apply_restart_namelist()` — As above.
+5. `monitor_wrf()` — Run `wrf.exe`.
+6. `cleanup_run_inputs(run_uuid)` — (if `cleanup_inputs=true` AND NOT `restart_stop_after_upload`) Purge `inputs/<run_uuid>/` from S3.
 
 ## Mode Toggles (TOML / env vars)
 
@@ -86,11 +108,15 @@ All can be set in `parameters.toml` or overridden via env var (env wins):
 
 ### `[restart]` section — chunked WRF runs
 
-Enables WRF to write `wrfrst` files at a fixed interval and continue from them on subsequent `wrf_only` invocations. Designed for long simulations split across SLURM jobs subject to per-job time limits.
+Enables the unified per-chunk mode and configures wrfrst checkpointing.
 
-- **`enable`** (default `false`) — Master switch. When true, `apply_restart_namelist()` configures the namelist for restart-aware behavior on every wrf_only invocation.
-- **`interval_days`** (required when `enable=true`) — WRF `restart_interval` set to `interval_days * 24 * 60` minutes.
-- **`stop_after_upload`** (default `false`) — When true, the wrf_only invocation runs ~`interval_days` of simulation then exits cleanly (achieved by overriding `end_date*` in the namelist to `chunk_end`, so wrf.exe reaches it naturally; no signal handling). Designed for chaining multiple `sbatch wrf.sl` jobs across `interval_days` boundaries. **Disables auto-cleanup of `inputs/<run_uuid>/`** — multiple sbatch jobs share the prefix; user manually purges after the simulation completes.
+- **`enable`** (default `false`) — Master switch. When true (and neither `preprocess_only` nor `wrf_only` is set), `main.py` dispatches to `run_chunked_pipeline()`. When set alongside `wrf_only=true`, configures restart-aware behaviour for the legacy split-pipeline WRF stage.
+- **`interval_days`** (required when `enable=true`) — WRF `restart_interval` set to `interval_days * 24 * 60` minutes. Also defines the chunk window length.
+- **`stop_after_upload`** (default `false`) — When true, each invocation processes one chunk and exits (achieved by overriding `end_date*` in the namelist to `chunk_end`, so wrf.exe reaches it naturally; no signal handling). Designed for SLURM chained jobs across `interval_days` boundaries. **Disables auto-cleanup of `inputs/<run_uuid>/`** — multiple invocations share the prefix; user manually purges after the simulation completes. When false, the chunk loop runs internally until sim_end (best for local docker-compose dev).
+
+**Image consolidation:** the same `wrf-auto-runs-intel-wvt:1.8+` image runs both preprocess and WRF in unified mode — the intel WPS is built dmpar (option 10 in `wrf-wps-intel-wvt/Dockerfile`) so `metgrid.exe`/`real.exe` parallelize via `mpirun -n N`.
+
+**Wrfrst round-trip:** every chunk iteration re-downloads wrfrst from S3 even in the in-container loop case (where the wrfrst is technically already local). This is intentional: `run_real` rmtrees `run_path`, and rather than stash/restore wrfrst across that operation, we let every iteration look like a fresh container start. Cost is one wrfrst-sized download per chunk (~500 MB–1 GB); trivial vs. the ~2.6 TB of wrffdda re-downloads this design eliminates.
 
 **S3 layout for restart artifacts:** wrfrst files live in the `inputs/<run_uuid>/` prefix alongside wrfinput/wrfbdy. Only the latest wrfrst per domain is kept on S3 (older ones are deleted via `cleanup_prior_wrfrst` after each upload).
 
@@ -108,7 +134,7 @@ Enables WRF to write `wrfrst` files at a fixed interval and continue from them o
 Under `<remote.output.path>/`:
 
 - `inputs/<run_uuid>/` — Preprocess outputs handed to the WRF stage: `namelist.input`, `namelist.wps`, `wrfinput_d*`, `wrfbdy_d*`, `wrffdda_d*` (FDDA only), `wrflowinp_d*` (some SST options only), `trmask_d*` (WVT only), `wrfrst_d*_<TIMESTAMP>` (restart only — only the latest per domain). Purged after successful WRF if `cleanup_inputs=true` AND NOT `restart_stop_after_upload`.
-- `<run_uuid>/wrfout*` — Main WRF output files (uploaded by `monitor_wrf` during the run, deleted locally after upload).
+- `wrfout_d*` / `wrfxtrm_d*` / `wrfzlevels_d*` (directly under `<remote.output.path>/`, NO run_uuid prefix) — Main WRF output files. Uploaded by `monitor_wrf` during the run, deleted locally after upload. (Earlier docs incorrectly placed these under a `<run_uuid>/` subprefix; the actual code in `utils.ul_output_files` uploads to the root path.)
 - `logs/<run_uuid>/rsl.*` — `rsl.error.*` / `rsl.out.*` from `real.exe` / `ndown.exe` / `wrf.exe` failures.
 
 ## Key Architecture
@@ -117,9 +143,8 @@ All Python modules live under `wrf-auto-runs/`.
 
 - **`params.py`** — Central config loader. Reads `parameters.toml`, detects Docker vs local mode (`[no_docker]` section), supports env var overrides (`start_date`, `end_date`, `domains`, `n_cores`, `n_cores_preprocess`, `duration_hours`, `wrf_only`, `preprocess_only`, `cleanup_inputs`, `run_uuid`, `restart_enable`, `restart_interval_days`, `restart_stop_after_upload`). All other scripts import `params` for paths and settings.
 - **`defaults.py`** — Default namelist values for WPS and WRF. Defines field classification sets (`GEOGRID_ARRAY_FIELDS`, `DOMAINS_PER_DOMAIN_FIELDS`, etc.) and pipeline key sets (`DOMAINS_PIPELINE_KEYS`, `TIME_CONTROL_PIPELINE_KEYS`) that distinguish pipeline-consumed keys from WRF passthrough keys.
-- **`set_params.py`** — Namelist management. Reads/writes Fortran namelists (`namelist.wps`, `namelist.input`) using `f90nml`. Handles domain subsetting/renumbering, time parameter injection, output stream configuration, and computes `time_step = dx * 0.001 * 6`. Uses `apply_overrides()` to merge TOML sections into WRF namelist sections.
-- **`upload_namelists.py`** — Despite the name, this module owns the entire `inputs/<run_uuid>/` S3 prefix lifecycle: `upload_run_inputs`, `download_run_inputs`, `cleanup_run_inputs`. Also owns the wrfrst lifecycle helpers used by `monitor_wrf`: `upload_wrfrst`, `cleanup_prior_wrfrst`, `detect_restart_state`, `parse_wrfrst_timestamp`.
-- **`set_params.py`** — Also exposes `apply_restart_namelist(restart_time, restart_interval_minutes, end_date_override=None)` for the wrf_only restart flow. Mirrors the existing `set_ndown_params` / `update_metgrid_levels` pattern of in-place f90nml edits.
+- **`set_params.py`** — Namelist management. Reads/writes Fortran namelists (`namelist.wps`, `namelist.input`) using `f90nml`. Handles domain subsetting/renumbering, time parameter injection, output stream configuration, and computes `time_step = dx * 0.001 * 6`. Uses `apply_overrides()` to merge TOML sections into WRF namelist sections. Also exposes `apply_restart_namelist(restart_time, restart_interval_minutes, end_date_override=None)` — in-place edit of `namelist.input` for restart/chunk-aware runs.
+- **`upload_namelists.py`** — Despite the name, this module owns the entire `inputs/<run_uuid>/` S3 prefix lifecycle: `upload_run_inputs` / `download_run_inputs` / `cleanup_run_inputs` (legacy split mode), plus `upload_chunk_namelists` / `detect_remote_restart_state` / `download_wrfrst_to_run_path` (unified per-chunk mode). Also owns the wrfrst lifecycle helpers used by `monitor_wrf`: `upload_wrfrst`, `cleanup_prior_wrfrst`, `detect_restart_state`, `parse_wrfrst_timestamp`.
 - **`utils.py`** — Shared utilities: rclone config creation, output file querying/renaming/uploading, variable filtering via `ncks`, domain projection recalculation (`pyproj`).
 - **`monitor_wrf.py`** — Runs `wrf.exe` and polls every 60s for completed output files, uploads them via rclone, and deletes local copies. On failure, uploads `rsl.*` log files.
 
@@ -146,15 +171,18 @@ One-way nesting from a prior WRF run. Activated by the `[ndown]` section in `par
 
 ## SLURM Orchestration
 
-For production split-pipeline runs, a per-project orchestrator script (`run_wrf_hetzner.sl` is the working pattern) is a plain bash script (not a SLURM job) that:
+For production unified per-chunk runs, a per-project orchestrator script (`run_wrf_hetzner.sh` is the working pattern) is a plain bash script (not a SLURM job) that:
 
-1. Generates a single `run_uuid`.
-2. `sbatch preprocess.sl` (gfortran image, `preprocess_only=true`) → captures jobid.
-3. `sbatch --dependency=afterok:<jobid> wrf.sl` (Intel image, `wrf_only=true`) → only runs if preprocess succeeded.
+1. Resolves `RUN_UUID` (env > `parameters.toml` > generated).
+2. Reads `start_date` / `end_date` / `interval_days` / `stop_after_upload` from `parameters.toml` via a small awk-based TOML reader (no python deps in the cluster's global env).
+3. Computes `num_chunks = ceil((end - start) / interval_days) + 1` (the +1 hits the early-exit branch and no-ops).
+4. Submits `num_chunks` chained `chunk.sl` jobs via `--dependency=afterany`. Each chunk auto-detects its position from S3 wrfrst state.
 
-Both `preprocess.sl` and `wrf.sl` get the `RUN_UUID` via `--export` so they share the S3 inputs prefix. See `slurm_scripts/readme.md` for cluster-specific variants.
+Shared bash helpers (`toml_get`, `gen_uuid`, `resolve_run_uuid`) live in a per-project `lib.sh` that the three project shell scripts (`run_local.sh`, `run_one_chunk.sh`, `run_wrf_<cluster>.sh`) all source. Copy `lib.sh` alongside when cloning a new project dir.
 
-**Apptainer gotcha:** with `--contain --writable-tmpfs`, the in-container `/tmp` defaults to a tiny tmpfs (~64 MB) which causes ERA5 downloads to silently truncate (rclone streams through `/tmp`). All split-pipeline SLURM scripts bind `${LOCAL_SCRATCH}/apptainer_tmp:/tmp` to a real disk path.
+The legacy split-pipeline pattern (separate `preprocess.sl` + `wrf.sl` chained via `--dependency=afterok`) is still supported — see `slurm_scripts/readme.md` for cluster-specific variants.
+
+**Apptainer gotcha:** with `--contain --writable-tmpfs`, the in-container `/tmp` defaults to a tiny tmpfs (~64 MB) which causes ERA5 downloads to silently truncate (rclone streams through `/tmp`). All SLURM scripts bind `${LOCAL_SCRATCH}/apptainer_tmp:/tmp` to a real disk path.
 
 ## Key Dependencies
 
