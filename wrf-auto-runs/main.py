@@ -22,7 +22,6 @@ from run_metgrid import run_metgrid
 from run_real import run_real
 from monitor_wrf import monitor_wrf
 from upload_namelists import (
-    upload_run_inputs, download_run_inputs, cleanup_run_inputs, detect_restart_state,
     upload_chunk_namelists, detect_remote_restart_state, download_wrfrst_to_run_path,
 )
 from check_ndown import check_ndown_params
@@ -109,8 +108,17 @@ def run_chunked_pipeline(run_uuid):
     Loops chunks internally if stop_after_upload=false. Exits after one chunk if true
     (caller — typically a SLURM-submitted container — handles repeated invocations).
     """
-    sim_start, sim_end = _read_sim_window()
-    print(f'-- simulation window: {sim_start} → {sim_end}')
+    sim_start_user, sim_end = _read_sim_window()
+    # Real WRF start is begin_hours before the user's desired output start: WRF integrates
+    # the spin-up period and history_begin_h_<n> suppresses wrfout for that span. Chunk math
+    # operates on the real WRF window so spin-up gets its own chunks instead of being
+    # silently bolted onto chunk 1.
+    sim_start = sim_start_user.subtract(hours=params._original_begin_hours)
+    if params._original_begin_hours > 0:
+        print(f'-- simulation window: {sim_start} → {sim_end} '
+              f'(incl. {params._original_begin_hours}h spin-up before user start_date {sim_start_user})')
+    else:
+        print(f'-- simulation window: {sim_start} → {sim_end}')
 
     chunk_n = 0
     while True:
@@ -123,11 +131,16 @@ def run_chunked_pipeline(run_uuid):
             return
 
         chunk_end = min(chunk_start.add(days=params.restart_interval_days), sim_end)
+        elapsed_h = int((chunk_start - sim_start).total_seconds() / 3600)
+        remaining_begin_h = max(0, params._original_begin_hours - elapsed_h)
         print(f'-- chunk #{chunk_n}: {chunk_start} → {chunk_end}'
-              + (f' (restart from {restart_state})' if restart_state is not None else ' (cold start)'))
+              + (f' (restart from {restart_state})' if restart_state is not None else ' (cold start)')
+              + (f' [spin-up remaining: {remaining_begin_h}h]' if remaining_begin_h > 0 else ''))
 
-        # Mutate params.file in-place so the existing pipeline reads chunk-specific dates.
-        params.set_chunk_dates(chunk_start, chunk_end)
+        # Mutate params.file in-place so the existing pipeline reads chunk-specific dates and
+        # remaining begin_hours. _chunked_mode_active is set as a side effect, which gates
+        # set_params.set_nml_params from double-subtracting begin_hours from start_date.
+        params.set_chunk_dates(chunk_start, chunk_end, remaining_begin_h)
 
         # ---- Preprocess (existing pipeline functions, scoped to this chunk's window) ----
         domains = _resolve_domains()
@@ -210,26 +223,6 @@ def run_chunked_pipeline(run_uuid):
         # else: loop back to next chunk in this same container
 
 
-def derive_wrf_run_context():
-    """Compute (domains, outputs, end_date, rename_dict) for wrf_only mode.
-
-    Calls set_nml_params once to derive the same return values the full preprocess
-    pipeline would. set_nml_params writes namelist.{input,wps} to data_path as a
-    side effect, but that's harmless: download_run_inputs places the real, post-real
-    namelist.input directly at run_path/namelist.input, which is what wrf.exe reads.
-    """
-    domains = _resolve_domains()
-    ndown_check, domains_init = check_ndown_params(domains)
-    src_n_domains, domains = check_nml_params(domains)
-    if domains_init is None:
-        domains_init = list(domains)
-
-    start_date, end_date, hour_interval, outputs = set_nml_params(domains_init)
-
-    rename_dict = _build_rename_dict(ndown_check, domains)
-    return domains, outputs, start_date, end_date, rename_dict
-
-
 ########################################
 ### Run sequence
 
@@ -238,10 +231,9 @@ start_time = pendulum.now('UTC')
 print(f'-- run uuid: {run_uuid}')
 print(f"-- start time: {start_time.format('YYYY-MM-DD HH:mm:ss')}")
 
-if params.restart_enable and not params.preprocess_only and not params.wrf_only:
+if params.restart_enable and not params.preprocess_only:
     # Phase 3 unified per-chunk mode — preprocess + WRF in a single process per chunk,
-    # looped internally if stop_after_upload=false. Triggered by [restart].enable=true alone
-    # (without preprocess_only or wrf_only, which select the legacy Phase 1/2 split modes).
+    # looped internally if stop_after_upload=false.
     print('-- Mode: unified chunked (Phase 3) — preprocess + WRF per chunk in a single container')
     run_chunked_pipeline(run_uuid)
 
@@ -249,73 +241,6 @@ if params.restart_enable and not params.preprocess_only and not params.wrf_only:
     print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
     mins = round((end_time - start_time).total_minutes())
     print(f"-- Total run minutes: {mins}")
-
-elif params.wrf_only:
-    print('-- Mode: wrf_only (skipping preprocessing; downloading inputs from S3)')
-    domains, outputs, start_date, end_date, rename_dict = derive_wrf_run_context()
-    print(f'-- domains: {domains}')
-
-    print(f'-- Downloading run inputs for uuid {run_uuid}...')
-    download_run_inputs(run_uuid)
-
-    # Restart-mode handling — see plan: Phase 2.
-    if params.restart_enable:
-        restart_state = detect_restart_state()  # latest wrfrst timestamp on disk, or None for cold-start
-
-        if restart_state is not None and restart_state >= end_date:
-            print(f'-- Restart timestamp {restart_state} >= end_date {end_date}; nothing to simulate.')
-            if params.cleanup_inputs and not params.restart_stop_after_upload:
-                cleanup_run_inputs(run_uuid)
-            end_time = pendulum.now('UTC')
-            print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
-            import sys
-            sys.exit(0)
-
-        chunk_start = restart_state if restart_state is not None else start_date
-        interval_minutes = params.restart_interval_days * 24 * 60
-        end_date_override = None
-        if params.restart_stop_after_upload:
-            chunk_end = min(chunk_start.add(days=params.restart_interval_days), end_date)
-            end_date_override = chunk_end
-
-        apply_restart_namelist(restart_state, interval_minutes, end_date_override)
-
-        if restart_state is not None:
-            print(f'-- Restarting from {restart_state}')
-        else:
-            print('-- Cold start with restart writes enabled')
-        if end_date_override is not None:
-            print(f'-- Chunk end_date overridden to {end_date_override}')
-
-    # Pass the chunk's actual simulation end to monitor_wrf so it can apply the
-    # midnight-skip rule correctly: intermediate chunks have chunk_end < end_date
-    # (and chunk_end is always at midnight by construction), while the final chunk
-    # / non-chunked runs have chunk_end == end_date which may or may not be midnight.
-    # end_date_override is only defined when restart was enabled above; short-circuit
-    # ensures we never reference it otherwise.
-    effective_chunk_end = (
-        end_date_override
-        if (params.restart_enable and params.restart_stop_after_upload and end_date_override is not None)
-        else end_date
-    )
-
-    start_time2 = pendulum.now('UTC')
-    print('-- Running WRF...')
-    monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=effective_chunk_end)
-
-    # Cleanup gating: stop_after_upload mode disables auto-cleanup (multiple sbatch jobs share the prefix).
-    if params.cleanup_inputs and not params.restart_stop_after_upload:
-        print(f'-- Cleaning up inputs/{run_uuid}/ on remote...')
-        cleanup_run_inputs(run_uuid)
-    elif params.restart_stop_after_upload:
-        print('-- stop_after_upload=true: skipping cleanup_run_inputs (manual cleanup required after full simulation completes)')
-
-    end_time = pendulum.now('UTC')
-    print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
-    mins = round((end_time - start_time).total_minutes())
-    print(f"-- Total run minutes: {mins}")
-    wrf_mins = round((end_time - start_time2).total_minutes())
-    print(f"-- WRF run minutes: {wrf_mins}")
 
 else:
     domains = _resolve_domains()
@@ -399,8 +324,7 @@ else:
         rename_dict = _build_rename_dict(ndown_check, domains)
 
     if params.preprocess_only:
-        print('-- Uploading run inputs (wrfinput, wrfbdy, namelist.input) for handoff to WRF stage...')
-        upload_run_inputs(run_uuid)
+        print('-- preprocess_only=true: preprocessing complete; inputs left in run_path. Exit.')
 
         end_time = pendulum.now('UTC')
 

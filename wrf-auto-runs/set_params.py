@@ -385,7 +385,15 @@ def set_nml_params(domains=None):
     wrf_tc['history_begin'] = [history_begin] * n_domains
     wrf_tc['history_outname'] = params.history_outname
 
-    new_start_date = start_date.subtract(minutes=history_begin)
+    if params._chunked_mode_active:
+        # Chunked mode: chunk_start IS the chunk's real WRF start, and history_begin
+        # already holds the remaining spin-up for this chunk (set by main.py via
+        # params.set_chunk_dates). Subtracting again would double-count the offset.
+        new_start_date = start_date
+    else:
+        # Single-stage / preprocess-only: pull start back by history_begin so WRF actually
+        # integrates the spin-up period; history_begin_h then suppresses wrfout for that span.
+        new_start_date = start_date.subtract(minutes=history_begin)
 
     interval = pendulum.interval(start_date, end_date.subtract(minutes=1))
 

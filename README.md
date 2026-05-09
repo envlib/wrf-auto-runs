@@ -46,56 +46,6 @@ docker compose logs -f         # Look at the logs go!
 docker compose down            # Clean up after completion / failure
 ```
 
-## Legacy Split Workflow (Preprocess + WRF)
-
-The split workflow runs preprocessing (steps through `real.exe`) in one container, hands off `wrfinput_d*` / `wrfbdy_d*` / `namelist.input` / etc. via S3, and runs `wrf.exe` in a second container. The unified per-chunk workflow supersedes this for new work, but the split mode is preserved for backwards compat.
-
-### Local (docker-compose)
-
-A two-service compose file with `depends_on: condition: service_completed_successfully` plus a tiny wrapper:
-
-```yaml
-# docker-compose.yml
-services:
-  preprocess:
-    image: mullenkamp/wrf-auto-runs-wvt:1.7
-    environment:
-      - run_uuid=${RUN_UUID:?}
-      - preprocess_only=true
-      - n_cores_preprocess=8
-    volumes:
-      - "./parameters.toml:/app/parameters.toml"
-      - ~/WPS_GEOG:/WPS_GEOG
-      - ~/data/wrf/tests/test_wvt_preprocess:/data
-  wrf:
-    image: mullenkamp/wrf-auto-runs-intel-wvt:1.8
-    environment:
-      - run_uuid=${RUN_UUID:?}
-      - wrf_only=true
-      - n_cores=8
-    volumes:
-      - "./parameters.toml:/app/parameters.toml"
-      - ~/WPS_GEOG:/WPS_GEOG
-      - ~/data/wrf/tests/test_wvt_wrf:/data
-    depends_on:
-      preprocess:
-        condition: service_completed_successfully
-```
-
-```bash
-#!/bin/bash
-# run_local.sh
-source ./lib.sh
-export RUN_UUID="$(resolve_run_uuid ./parameters.toml)"
-docker compose up --abort-on-container-failure
-```
-
-Each stage gets its own scratch volume so the S3 handoff is actually exercised (vs. shared volume which would mask S3 issues until SLURM).
-
-### SLURM
-
-A per-project orchestrator (plain bash, not a SLURM job) generates a `run_uuid` and submits two jobs with `--dependency=afterok:<preprocess_jobid>`. See `slurm_scripts/readme.md` for cluster-specific scripts.
-
 ## docker-compose.yml
 
 ### WPS_GEOG path
@@ -130,16 +80,15 @@ All settings live in `parameters.toml`. See `parameters_example.toml` for a full
 
 - **`n_cores`** — Number of MPI processes for `wrf.exe` (max ~24 before efficiency drops).
 - **`n_cores_preprocess`** — Number of MPI processes for `metgrid.exe` / `real.exe` / `ndown.exe`. Default `4`. Bump higher (8–16) to speed up long preprocessing runs. Requires the gfortran preprocess image (built dmpar from `wrf-wps-wvt-debian:1.3` onward).
-- **`preprocess_only`** — Legacy split-pipeline mode. Run preprocessing through `real.exe`, upload `inputs/<run_uuid>/` to S3, exit. Mutually exclusive with `wrf_only`.
-- **`wrf_only`** — Legacy split-pipeline mode. Skip preprocessing, download `inputs/<run_uuid>/` from S3, run `wrf.exe`. Requires `run_uuid` to be set (env or TOML).
-- **`cleanup_inputs`** — Default `true`. Single cleanup knob: deletes intermediate preprocessing files (met_em, ERA5 NetCDF, WPS int files) locally as the run progresses, AND purges `inputs/<run_uuid>/` from S3 after a successful WRF run. Set to `false` to keep everything for inspection. Note: `[restart].stop_after_upload=true` overrides this for the inputs-prefix purge (the prefix is shared across chained jobs).
-- **`run_uuid`** — Optional 13-char hex identifier for the run. Normally generated fresh per run; set explicitly to resume a chunked run against an existing `inputs/<run_uuid>/` prefix, or to make a run reproducible by uuid. Precedence: env var > TOML > generated.
+- **`preprocess_only`** — Run preprocessing through `real.exe`, then exit without invoking `wrf.exe`. Useful for testing the preprocessing chain in isolation; inputs are left in the local `run_path` for inspection.
+- **`cleanup_inputs`** — Default `true`. Deletes intermediate preprocessing files (met_em, ERA5 NetCDF, WPS int files) locally as the run progresses. Set to `false` to keep everything for inspection.
+- **`run_uuid`** — Optional 13-char hex identifier for the run. Normally generated fresh per run; set explicitly to resume a chunked run against an existing `inputs/<run_uuid>/` prefix on S3, or to make a run reproducible by uuid. Precedence: env var > TOML > generated.
 - **`output_presets`** — Optional string or list of named variable presets (e.g. `'wrf_to_int'`). Each preset expands to the set of wrfout variables required by the named tool. Variables from all selected presets are merged together.
 - **`output_variables`** — Optional list of additional wrfout variables to retain. Merged with any preset variables. Coordinate and auxiliary 3D variables are included automatically. Comment out both `output_presets` and `output_variables` to keep all variables.
 
 ### `[restart]`
 
-Activates the unified per-chunk workflow (the recommended mode for production runs). With `enable=true` and neither `preprocess_only` nor `wrf_only` set, each container invocation runs its own preprocess + WRF for one `interval_days` chunk; chunk boundaries auto-detect from the latest wrfrst on S3. Also configures restart-aware behaviour for the legacy `wrf_only` mode if combined with that flag.
+Activates the unified per-chunk workflow (the recommended mode for production runs). With `enable=true` and `preprocess_only` not set, each container invocation runs its own preprocess + WRF for one `interval_days` chunk; chunk boundaries auto-detect from the latest wrfrst on S3.
 
 - **`enable`** (default `false`) — Master switch.
 - **`interval_days`** (required when `enable=true`) — Chunk window length and WRF `restart_interval` (set to `interval_days * 24 * 60` minutes). Each chunk writes a wrfrst at chunk_end and uploads it to `inputs/<run_uuid>/` (only the latest per domain is kept on S3; older ones are deleted automatically).
@@ -154,9 +103,10 @@ Notes on chunked-run behaviour:
 
 Simulation period and output configuration.
 
-- **`start_date`** / **`end_date`** or **`duration_hours`** — Simulation window.
+- **`start_date`** — Desired *output* start (timestamp of the first wrfout frame). The actual WRF integration begins `[time_control.history_file].begin_hours` before this; that leading span is spin-up and produces no wrfout.
+- **`end_date`** or **`duration_hours`** — Simulation end. `duration_hours` is measured from `start_date` (i.e. covers only the output window, not the spin-up).
 - **`interval_hours`** — ERA5 boundary-condition update interval.
-- **`[time_control.history_file]`** — wrfout output interval per domain and start offset.
+- **`[time_control.history_file]`** — wrfout interval per domain (`interval_hours`) and spin-up length in hours (`begin_hours`). `begin_hours > 0` shifts the real WRF start back by that amount; the namelist's `history_begin_h_<n>` suppresses output for the leading span. In unified chunked mode the orchestrator submits enough chunks to cover the extended window and each chunk gets a chunk-aware `history_begin_h` so output starts cleanly at `start_date`.
 - **`[time_control.summary_file]`** — Enable wrfxtrm daily diagnostic output.
 - **`[time_control.z_level_file]`** — Enable wrfzlevels height-interpolated output at specified AGL heights.
 
@@ -217,11 +167,11 @@ Then run:
 uv run wrf-auto-runs/main.py
 ```
 
-Set `preprocess_only = true` in `parameters.toml` to run preprocessing only and upload to S3 inputs/<run_uuid>/; `wrf.exe` is skipped. Pair with a separate `wrf_only = true` invocation to do the WRF stage from those uploaded inputs.
+Set `preprocess_only = true` in `parameters.toml` to run preprocessing only and exit before `wrf.exe`. Inputs are left in the local `run_path` for inspection.
 
 ## Pipeline Steps
 
-### Unified per-chunk (`[restart].enable=true`, neither split flag set)
+### Unified per-chunk (`[restart].enable=true`)
 
 `run_chunked_pipeline` loops the following until `chunk_start >= sim_end` (or returns after one iteration if `stop_after_upload=true`):
 
@@ -242,7 +192,7 @@ Set `preprocess_only = true` in `parameters.toml` to run preprocessing only and 
 15. `monitor_wrf` runs `wrf.exe`; uploads wrfout / wrfxtrm / wrfzlevels / wrfrst as they complete
 16. If `stop_after_upload=true`: return; else loop to step 1
 
-### Single-stage (no restart, no split flag) or `preprocess_only=true`
+### Single-stage (no restart) or `preprocess_only=true`
 
 1. Validate ndown parameters and determine mode
 2. Validate executables and resolve domain list
@@ -258,16 +208,8 @@ Set `preprocess_only = true` in `parameters.toml` to run preprocessing only and 
 12. Auto-detect `num_metgrid_levels` from met_em files and update namelist
 13. Run `real.exe` (vertical interpolation and initial/boundary conditions)
 14. Run `ndown.exe` (ndown mode only)
-15. (`preprocess_only=true`) Upload run inputs to `inputs/<run_uuid>/` on S3 and exit
+15. (`preprocess_only=true`) Print "preprocessing complete; inputs left in run_path" and exit
 16. Otherwise run `wrf.exe`, poll for completed output files, upload in real-time
-
-### Legacy `wrf_only=true`
-
-1. Re-derive run context (domains, outputs, end_date, rename map) from `parameters.toml`
-2. Download `inputs/<run_uuid>/` from S3 into the run directory
-3. (if `[restart].enable=true`) Detect any wrfrst, apply restart namelist edits
-4. Run `wrf.exe`, poll for completed output files, upload in real-time
-5. (if `cleanup_inputs=true` AND not `restart.stop_after_upload`) Purge `inputs/<run_uuid>/` from S3
 
 ## WRF Output as Boundary Conditions
 

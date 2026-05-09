@@ -49,6 +49,11 @@ INTERVAL_DAYS=$(toml_get restart interval_days "${PARAMS}")
 STOP_AFTER_UPLOAD=$(toml_get restart stop_after_upload "${PARAMS}")
 [ "${STOP_AFTER_UPLOAD}" = "true" ] || STOP_AFTER_UPLOAD=false
 
+# begin_hours shifts the real WRF start back from the user's start_date; the chunk count
+# must cover that spin-up too. Default 0 if missing/empty so non-spin-up runs are unchanged.
+BEGIN_HOURS=$(toml_get "time_control.history_file" begin_hours "${PARAMS}")
+[ -z "${BEGIN_HOURS}" ] && BEGIN_HOURS=0
+
 if [ -z "${SIM_START}" ] || [ -z "${SIM_END}" ]; then
     echo "ERROR: [time_control].start_date and end_date must be set in parameters.toml"
     exit 1
@@ -59,13 +64,17 @@ if [ -z "${INTERVAL_DAYS}" ] || [ "${INTERVAL_DAYS}" -le 0 ]; then
 fi
 
 # ---- Determine number of jobs based on stop_after_upload --------------------
-# stop_after_upload=true:  one container per chunk → submit ceil((end-start)/interval) chained jobs.
+# stop_after_upload=true:  one container per chunk → submit ceil((end - real_start)/interval) chained jobs,
+#                          where real_start = sim_start - begin_hours.
 # stop_after_upload=false: one container loops internally through all chunks → submit just ONE job.
 
+START_EPOCH=$(date -u -d "${SIM_START}" +%s)
+REAL_START_EPOCH=$((START_EPOCH - BEGIN_HOURS * 3600))
+REAL_START=$(date -u -d "@${REAL_START_EPOCH}" '+%Y-%m-%d %H:%M:%S')
+
 if [ "${STOP_AFTER_UPLOAD}" = "true" ]; then
-    START_EPOCH=$(date -u -d "${SIM_START}" +%s)
     END_EPOCH=$(date -u -d "${SIM_END}" +%s)
-    DIFF_SEC=$((END_EPOCH - START_EPOCH))
+    DIFF_SEC=$((END_EPOCH - REAL_START_EPOCH))
     INTERVAL_SEC=$((INTERVAL_DAYS * 86400))
     # ceil(diff / interval)
     NUM_CHUNKS=$(( (DIFF_SEC + INTERVAL_SEC - 1) / INTERVAL_SEC ))
@@ -76,11 +85,13 @@ fi
 echo "Submitting WRF-ERA5 chunked pipeline (NeSI)"
 echo "  project dir:        ${RUN_PROJECT_DIR}"
 echo "  run_uuid:           ${RUN_UUID}"
-echo "  sim window:         ${SIM_START} → ${SIM_END}"
+echo "  user start_date:    ${SIM_START}"
+echo "  sim end_date:       ${SIM_END}"
+echo "  begin_hours:        ${BEGIN_HOURS} (real WRF start: ${REAL_START})"
 echo "  interval_days:      ${INTERVAL_DAYS}"
 echo "  stop_after_upload:  ${STOP_AFTER_UPLOAD}"
 if [ "${STOP_AFTER_UPLOAD}" = "true" ]; then
-    echo "  num_jobs:           ${NUM_CHUNKS} (one per chunk)"
+    echo "  num_jobs:           ${NUM_CHUNKS} (one per chunk, covering spin-up + sim window)"
 else
     echo "  num_jobs:           1 (container loops internally through all chunks)"
 fi

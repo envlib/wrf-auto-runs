@@ -60,9 +60,6 @@ if 'n_cores_preprocess' in os.environ:
 if 'duration_hours' in os.environ:
     file['time_control']['duration_hours'] = int(os.environ['duration_hours'])
 
-if 'wrf_only' in os.environ:
-    file['wrf_only'] = os.environ['wrf_only'].lower() in ('true', '1', 'yes')
-
 if 'preprocess_only' in os.environ:
     file['preprocess_only'] = os.environ['preprocess_only'].lower() in ('true', '1', 'yes')
 
@@ -101,14 +98,10 @@ is_remote_output = 'remote' in file and 'output' in file.get('remote', {})
 is_wrf_input = 'remote' in file and 'wrf' in file.get('remote', {})
 
 preprocess_only = file.get('preprocess_only', False)
-wrf_only = file.get('wrf_only', False)
 cleanup_inputs = file.get('cleanup_inputs', True)
 n_cores_preprocess = int(file.get('n_cores_preprocess', 4))
 
-if preprocess_only and wrf_only:
-    raise ValueError('preprocess_only and wrf_only are mutually exclusive — set at most one to true.')
-
-# [restart] section — config for chunked WRF runs (see plan: Phase 2 restart support).
+# [restart] section — config for chunked WRF runs.
 _restart_cfg = file.get('restart', {})
 restart_enable = bool(_restart_cfg.get('enable', False))
 restart_interval_days = _restart_cfg.get('interval_days')
@@ -121,18 +114,33 @@ if restart_stop_after_upload and not restart_enable:
 if restart_interval_days is not None:
     restart_interval_days = int(restart_interval_days)
 
+# Capture original begin_hours before any chunk-driven mutation. Used by run_chunked_pipeline
+# to compute per-chunk remaining spin-up. _chunked_mode_active is flipped by set_chunk_dates
+# and gates the start_date pull-back in set_params.set_nml_params (which only applies in
+# single-stage / preprocess-only modes — chunked mode handles spin-up via chunk windows).
+_original_begin_hours = int(file['time_control']['history_file']['begin_hours'])
+_chunked_mode_active = False
 
-def set_chunk_dates(chunk_start, chunk_end):
-    """Override start_date/end_date in params.file for the current chunk window.
 
-    Used by the unified per-chunk pipeline (Phase 3). The next set_nml_params() call
-    picks up these values; downstream functions (dl_era5, run_metgrid, etc.) read the
-    return values, so a single set_nml_params call after this is sufficient.
+def set_chunk_dates(chunk_start, chunk_end, remaining_begin_hours):
+    """Override start/end/begin_hours in params.file for the current chunk window.
+
+    Used by the unified per-chunk pipeline. The next set_nml_params() call picks up
+    these values; downstream functions (dl_era5, run_metgrid, etc.) read the return
+    values, so a single set_nml_params call after this is sufficient.
+
+    remaining_begin_hours: spin-up hours still pending at chunk_start, computed by
+    main.py as max(0, _original_begin_hours - elapsed_hours_since_real_sim_start).
+    Becomes the namelist's history_begin_h_<n>, suppressing wrfout for chunks that
+    fall inside the spin-up window.
     """
+    global _chunked_mode_active
     file['time_control']['start_date'] = chunk_start.strftime('%Y-%m-%d %H:%M:%S')
     file['time_control']['end_date'] = chunk_end.strftime('%Y-%m-%d %H:%M:%S')
+    file['time_control']['history_file']['begin_hours'] = int(remaining_begin_hours)
     # Clear duration_hours if set, so end_date takes precedence in set_nml_params.
     file['time_control'].pop('duration_hours', None)
+    _chunked_mode_active = True
 
 sst_source = file.get('sst', {}).get('source', 'era5')
 if sst_source not in ('era5', 'cci'):

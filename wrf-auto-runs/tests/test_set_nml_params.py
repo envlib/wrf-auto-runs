@@ -1,8 +1,11 @@
 import datetime
 
 import f90nml
+import pendulum
+import pytest
 
 import defaults
+import params
 from set_params import set_nml_params
 
 
@@ -175,3 +178,125 @@ class TestSetNmlParams:
         wrf = f90nml.read(tmp_path / 'namelist.input')
         assert wrf['physics']['cu_physics'] == [16, 0]
         assert wrf['domains']['max_dom'] == 2
+
+
+@pytest.fixture()
+def reset_chunked_flag():
+    """Ensure params._chunked_mode_active doesn't bleed across tests."""
+    params._chunked_mode_active = False
+    yield
+    params._chunked_mode_active = False
+
+
+class TestChunkedBeginHours:
+    """Verify history_begin and namelist start_* are chunk-aware when begin_hours > 0.
+
+    Setup mirrors the user's 1-year run: user_start = 2022-07-01, end = 2022-07-22 (short
+    so tests stay fast), interval_days = 7, begin_hours = 672 (4-week spin-up). Real WRF
+    start = user_start - 672 h = 2022-06-03. Spin-up spans chunks 1-4; output starts in
+    chunk 5.
+    """
+
+    USER_START = pendulum.datetime(2022, 7, 1, 0, 0, 0)
+    REAL_START = USER_START.subtract(hours=672)  # 2022-06-03 00:00:00
+    INTERVAL_HOURS = 7 * 24
+
+    def _set_chunk_user_config(self, mock_params, chunk_start, chunk_end, remaining_begin_h):
+        """Apply the user-style config + simulate main.py's per-chunk mutation."""
+        mock_params['time_control']['start_date'] = self.USER_START.strftime('%Y-%m-%d %H:%M:%S')
+        mock_params['time_control']['end_date'] = '2022-07-22 00:00:00'
+        mock_params['time_control'].pop('duration_hours', None)
+        mock_params['time_control']['history_file']['begin_hours'] = 672
+        params._original_begin_hours = 672
+        # main.py would call params.set_chunk_dates here; replicate its mutations directly
+        # (so the test exercises set_nml_params in isolation, not the full helper).
+        mock_params['time_control']['start_date'] = chunk_start.strftime('%Y-%m-%d %H:%M:%S')
+        mock_params['time_control']['end_date'] = chunk_end.strftime('%Y-%m-%d %H:%M:%S')
+        mock_params['time_control']['history_file']['begin_hours'] = remaining_begin_h
+        params._chunked_mode_active = True
+
+    def test_cold_chunk_1(self, mock_params, tmp_path, reset_chunked_flag):
+        """Chunk 1 cold start: namelist start = real_start, history_begin = 40320 min."""
+        chunk_start = self.REAL_START
+        chunk_end = chunk_start.add(days=7)
+        self._set_chunk_user_config(mock_params, chunk_start, chunk_end, 672)
+
+        set_nml_params()
+
+        wrf = f90nml.read(tmp_path / 'namelist.input')
+        assert wrf['time_control']['history_begin'] == [40320, 40320, 40320]
+        assert wrf['time_control']['start_year'][0]  == chunk_start.year
+        assert wrf['time_control']['start_month'][0] == chunk_start.month
+        assert wrf['time_control']['start_day'][0]   == chunk_start.day
+        assert wrf['time_control']['start_hour'][0]  == chunk_start.hour
+
+    def test_mid_spinup_chunk_2(self, mock_params, tmp_path, reset_chunked_flag):
+        """Chunk 2 (real_start + 168h): remaining = 504, history_begin = 30240 min."""
+        chunk_start = self.REAL_START.add(hours=168)
+        chunk_end = chunk_start.add(days=7)
+        self._set_chunk_user_config(mock_params, chunk_start, chunk_end, 504)
+
+        set_nml_params()
+
+        wrf = f90nml.read(tmp_path / 'namelist.input')
+        assert wrf['time_control']['history_begin'] == [30240, 30240, 30240]
+        assert wrf['time_control']['start_year'][0]  == chunk_start.year
+        assert wrf['time_control']['start_month'][0] == chunk_start.month
+        assert wrf['time_control']['start_day'][0]   == chunk_start.day
+
+    def test_last_spinup_chunk_4(self, mock_params, tmp_path, reset_chunked_flag):
+        """Chunk 4 (real_start + 504h): remaining = 168, history_begin = 10080 min."""
+        chunk_start = self.REAL_START.add(hours=504)
+        chunk_end = chunk_start.add(days=7)
+        self._set_chunk_user_config(mock_params, chunk_start, chunk_end, 168)
+
+        set_nml_params()
+
+        wrf = f90nml.read(tmp_path / 'namelist.input')
+        assert wrf['time_control']['history_begin'] == [10080, 10080, 10080]
+
+    def test_first_output_chunk_5(self, mock_params, tmp_path, reset_chunked_flag):
+        """Chunk 5 (= user_start, spin-up complete): history_begin = 0, start = user_start."""
+        chunk_start = self.USER_START  # = REAL_START + 672h
+        chunk_end = chunk_start.add(days=7)
+        self._set_chunk_user_config(mock_params, chunk_start, chunk_end, 0)
+
+        set_nml_params()
+
+        wrf = f90nml.read(tmp_path / 'namelist.input')
+        assert wrf['time_control']['history_begin'] == [0, 0, 0]
+        assert wrf['time_control']['start_day'][0]   == self.USER_START.day
+        assert wrf['time_control']['start_month'][0] == self.USER_START.month
+
+    def test_past_spinup_chunk_clamped(self, mock_params, tmp_path, reset_chunked_flag):
+        """Chunk past spin-up boundary: remaining clamped to 0; history_begin = 0."""
+        chunk_start = self.REAL_START.add(hours=840)  # past the 672h boundary
+        chunk_end = chunk_start.add(days=7)
+        self._set_chunk_user_config(mock_params, chunk_start, chunk_end, 0)
+
+        set_nml_params()
+
+        wrf = f90nml.read(tmp_path / 'namelist.input')
+        assert wrf['time_control']['history_begin'] == [0, 0, 0]
+        assert wrf['time_control']['start_day'][0] == chunk_start.day
+
+    def test_single_stage_regression(self, mock_params, tmp_path, reset_chunked_flag):
+        """Regression: when set_chunk_dates was NOT called, the existing single-stage
+        subtraction still applies — start_* gets pulled back by begin_hours."""
+        # Apply user-style config with begin_hours=672 but DO NOT touch _chunked_mode_active
+        # (the fixture left it False).
+        mock_params['time_control']['start_date'] = self.USER_START.strftime('%Y-%m-%d %H:%M:%S')
+        mock_params['time_control']['end_date'] = '2022-07-22 00:00:00'
+        mock_params['time_control'].pop('duration_hours', None)
+        mock_params['time_control']['history_file']['begin_hours'] = 672
+
+        assert params._chunked_mode_active is False  # sanity
+
+        set_nml_params()
+
+        wrf = f90nml.read(tmp_path / 'namelist.input')
+        assert wrf['time_control']['history_begin'] == [40320, 40320, 40320]
+        # start_* should be pulled back to REAL_START (user_start - 672h = 2022-06-03)
+        assert wrf['time_control']['start_year'][0]  == self.REAL_START.year
+        assert wrf['time_control']['start_month'][0] == self.REAL_START.month
+        assert wrf['time_control']['start_day'][0]   == self.REAL_START.day

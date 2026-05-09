@@ -2,11 +2,10 @@
 
 These scripts run the WRF-Auto pipeline inside an Apptainer container on HPC clusters managed by Slurm.
 
-The pipeline supports three execution patterns:
+The pipeline supports two execution patterns:
 
 1. **Unified per-chunk** (recommended for long runs) — `[restart].enable=true` in `parameters.toml`, `stop_after_upload=true` for chained-job behaviour. One SLURM job per chunk, each container does its own preprocess + WRF for `interval_days`. wrfbdy/wrffdda/wrfinput/wrflowinp/trmask are local-only (never round-trip through S3); only wrfrst + namelists persist. Working example: `run_wrf_hetzner.sh` + `chunk.sl` in `wrf-runs/projects/.../v33_3km_wvt_sst_max_pp/`.
 2. **Single-stage** — one SLURM job runs preprocessing and WRF end-to-end. Simple; fine for short runs that fit in a single job. The `run_wrf_*.sl` scripts in this directory use this pattern.
-3. **Split (preprocess + WRF)** (legacy) — two SLURM jobs chained with `--dependency=afterok`: a preprocess job (gfortran image) writes all run inputs to S3, then a WRF job (intel image) downloads them and runs `wrf.exe`. Kept for backwards compat. Per-project files: `run_wrf_<cluster>.sh` + `preprocess.sl` + `wrf.sl`.
 
 ## Prerequisites
 
@@ -170,20 +169,6 @@ Auto-cleanup of `inputs/<run_uuid>/` is disabled when `stop_after_upload=true` (
 
 The working unified-mode pattern lives in `wrf-runs/projects/.../v33_3km_wvt_sst_max_pp/`. To create a unified-mode run for another project, copy those five files (`run_wrf_<cluster>.sh`, `chunk.sl`, `run_one_chunk.sh`, `run_local.sh`, `lib.sh`) plus `parameters.toml` and `docker-compose.yml`.
 
-### Split-pipeline scripts (preprocess + WRF, dependency-chained — legacy)
-
-The earlier split-pipeline pattern is preserved for backwards compat or use cases where the up-front-preprocess approach is preferable. Preprocess runs in the gfortran image, hands all inputs to S3 (`inputs/<run_uuid>/`), and the WRF stage downloads them in the intel image. Three files per project:
-
-- **`run_wrf_<cluster>.sh`** — Plain bash orchestrator (NOT a SLURM job script). Generates a single `run_uuid` and submits the two real jobs.
-- **`preprocess.sl`** — SLURM job (gfortran image). `preprocess_only=true`, modest resource allocation, exports `n_cores_preprocess=${SLURM_NTASKS}` so dmpar metgrid uses the full allocation.
-- **`wrf.sl`** — SLURM job (intel image). `wrf_only=true`, full resources, `--dependency=afterok:<preprocess_jobid>` enforced by the orchestrator.
-
-To create a split-pipeline run for another project, copy those three files from a project that still uses the pattern (or recover from git history of the `_pp` directory) and adjust paths/resources as needed.
-
-**Per-stage scratch:** each job uses its own `LOCAL_SCRATCH=/var/tmp/wrf_scratch/${SLURM_JOB_ID}`. The S3 inputs prefix is the only handoff between them — there's no shared filesystem dependency between preprocess and WRF.
-
-The split-pipeline pattern can also be combined with `[restart].enable=true` + `stop_after_upload=true` for crash-recoverable long runs in the older Phase 2 style: one preprocess job, then multiple chained `wrf.sl` jobs sharing the RUN_UUID, each consuming the prior chunk's wrfrst from `inputs/<RUN_UUID>/`. The unified per-chunk mode supersedes this for new work.
-
 ### Known gotcha: `/tmp` size with `--contain --writable-tmpfs`
 
 With `--contain --writable-tmpfs` (used by all scripts here), the in-container `/tmp` defaults to a tiny tmpfs (~64 MB on most builds). `era5_dl` streams downloads through `/tmp` for atomic writes, so the first few small files succeed and later ones silently truncate — manifesting as "metgrid failed because nothing was downloaded" with no error from the download step.
@@ -246,4 +231,4 @@ sacct -j <job_id> --format=JobID,Elapsed,Timelimit,TotalCPU,Alloc%2,MaxRSS,State
 Log files are written to the submission directory:
 - Single run: `wrf-auto_<job_id>.log`
 - Array: `wrf-auto_<array_job_id>_<task_id>.log`
-- Split-pipeline: `preprocess_<job_id>.log`, `wrf_<job_id>.log`
+- Chunked: `log_chunk_<job_id>.log`

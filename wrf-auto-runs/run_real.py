@@ -48,7 +48,7 @@ def run_real(run_uuid, del_old=True):
     cmd_str = f'ln -sf {params.wrf_nml_path} .'
     p = subprocess.run(cmd_str, shell=True, capture_output=False, text=False, check=False, cwd=params.run_path)
 
-    # Symlink namelist.wps too, so upload_run_inputs (which uploads from run_path with --copy-links)
+    # Symlink namelist.wps too, so upload_chunk_namelists (which uploads from run_path with --copy-links)
     # picks it up alongside namelist.input. Not needed at runtime by real.exe / wrf.exe.
     cmd_str = f'ln -sf {params.wps_nml_path} .'
     p = subprocess.run(cmd_str, shell=True, capture_output=False, text=False, check=False, cwd=params.run_path)
