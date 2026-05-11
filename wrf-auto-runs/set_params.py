@@ -533,6 +533,13 @@ def set_ndown_params(interval_seconds):
 
     wrf_nml['bdy_control']['have_bcs_moist'] = True
     wrf_nml['bdy_control']['have_bcs_scalar'] = True
+
+    tracer_opt_val = params.file.get('dynamics', {}).get('tracer_opt', 0)
+    if isinstance(tracer_opt_val, list):
+        tracer_opt_val = tracer_opt_val[0]
+    if tracer_opt_val == 4:
+        wrf_nml['bdy_control']['have_bcs_tracer'] = True
+
     wrf_nml['time_control']['io_form_auxinput2'] = 2
     wrf_nml['time_control']['interval_seconds'] = interval_seconds
 

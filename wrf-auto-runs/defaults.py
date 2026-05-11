@@ -139,7 +139,10 @@ FDDA_PER_DOMAIN_DEFAULTS = {
     'if_no_pbl_nudging_q': 1,    # Don't nudge moisture in PBL
     'guv': 0.0003,               # Nudging coefficient for wind (3e-4 s^-1)
     'gt': 0.0003,                # Nudging coefficient for temperature
-    'gq': 0.00001,               # Nudging coefficient for moisture
+    # Moisture nudging disabled. Even small gq (~1e-5) drifts the WVT qv_tr/qv
+    # ratio over multi-month runs because nudging acts on qv but not on the
+    # tracer 4D array. T/wind nudging indirectly constrains moisture transport.
+    'gq': 0,                     # Nudging coefficient for moisture
 }
 
 # Per-domain fields in &fdda that need broadcasting/masking by grid_fdda
