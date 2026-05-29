@@ -18,11 +18,13 @@ Unified per-chunk is the standard workflow because per-chunk preprocess avoids t
 
 | Image | Compiler | WPS build | Use |
 |---|---|---|---|
-| `mullenkamp/wrf-auto-runs-intel-wvt:1.8` | Intel oneAPI | dmpar | **Default for all modes** — unified per-chunk, single-stage, preprocess-only |
+| `mullenkamp/wrf-auto-runs-intel-wvt:1.12` | Intel oneAPI | dmpar | **Default for all modes** — unified per-chunk, single-stage, preprocess-only. Built on base `wrf-wps-intel-wvt-ubuntu:1.5`. |
 | `mullenkamp/wrf-auto-runs-wvt:1.7` | gfortran | dmpar | Backup. Short single-stage runs |
 | `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | Non-WVT variant |
 
 Both WPS builds inject heap-array allocation flags (`-fno-stack-arrays` for gfortran, `-heap-arrays` for Intel) — required for stable long preprocessing runs (without them metgrid segfaults in libc partway through). See `~/.claude/projects/.../memory/wps_heap_arrays_requirement.md` and `wrf-docker-builds/CLAUDE.md`.
+
+**Image 1.12 adds native runtime column diagnostics** (`phys/module_diag_wvt_columns.F` in the WVT branch): 8 new 2D fields written at history-write time — `PWAT`, `PWAT_TR`, `SLP`, `VIMF_U`, `VIMF_V`, `VIMF_TR_U`, `VIMF_TR_V`, `IVT`. Formulas match cfdb-ingest's offline computation exactly (validated to ~1e-7 relative agreement), so the 3D source fields (`QVAPOR`, `qv_tr`, `U`, `V`) can be dropped from `output_variables` for ~30× wrfout storage reduction. The `mslp` and `pwat` lowercase names in older configs were cfdb-ingest-derived only and no longer needed — use the uppercase native names.
 
 ## Commands
 
@@ -68,7 +70,7 @@ uv run pytest                   # pytest wrf-auto-runs/tests/
 
 When `[restart].enable` is not set (or `preprocess_only=true`), the pipeline runs the full sequence below in a single container. `set_nml_params` pulls the namelist's `start_year/month/day/hour` back by `begin_hours` (so WRF integrates the spin-up) and sets `history_begin_h_<n>` to suppress wrfout for that leading span — the namelist's effective `start_date` is `user_start_date − begin_hours`, and the first wrfout frame lands at `user_start_date`.
 
-1. `check_ndown_params()` — Determine if ndown (one-way nesting) mode is active
+1. `check_ndown_params()` — Determine if ndown is active and which mode (`"single"` or `"nested-run"`). Returns `(ndown_check, ndown_mode, nested_run_domains, domains_init)`.
 2. `check_nml_params()` — Validate executables and domain configuration
 3. `set_nml_params()` — First pass: configure namelists for the initial domain set
 4. `run_geogrid()` — Execute `geogrid.exe`; returns domain bounding box
@@ -80,10 +82,12 @@ When `[restart].enable` is not set (or `preprocess_only=true`), the pipeline run
 10. `process_sst_cci()` — (CCI SST source only) Process CCI SST to WPS Int
 11. `run_metgrid()` — Execute `metgrid.exe` via `mpirun -n {n_cores_preprocess}`
 12. `update_metgrid_levels()` — Auto-detect `num_metgrid_levels`, update namelist
-13. `run_real()` — Execute `real.exe` via `mpirun -n {n_cores_preprocess}`
-14. `run_ndown()` — (ndown only) Execute `ndown.exe` via `mpirun -n {n_cores_preprocess}`
+13. `run_real()` — Execute `real.exe` via `mpirun -n {n_cores_preprocess}`. In nested-run ndown mode this produces `wrfinput_d0N` for every domain in `domains_init` (parent + ndown target + nested children) so the inner nests have real-derived ICs after the post-ndown promotion.
+14. `run_ndown(mode=ndown_mode, post_n_domains=...)` — (ndown only) Execute `ndown.exe`. On success, post-promote step diverges by mode:
+    - `"single"`: delete `*_d01`, rename ndown-produced `*_d02 → *_d01`. Subsequent `wrf.exe` runs a single domain.
+    - `"nested-run"`: ascending-order shift — delete coarse-parent inputs (`wrfinput_d01`, `wrfbdy_d01`, `geo_em.d01.nc`), then `*_d02 → *_d01`, `*_d03 → *_d02`, ... (geo_em files included). Then `set_nml_params(nested_run_domains)` rebuilds `namelist.input` for the post-promote subtree.
 15. (preprocess-only) Print "preprocessing complete; inputs left in run_path", then exit
-16. `monitor_wrf()` — Launch `wrf.exe` via `mpirun`, poll for output, upload files in real-time
+16. `monitor_wrf(rename_dict=...)` — Launch `wrf.exe` via `mpirun`, poll for output, upload files in real-time. In nested-run ndown mode `rename_dict` maps every renumbered domain back to its user-space id (e.g., `{'_d01_': '_d02_', '_d02_': '_d03_'}`). `utils.rename_files` iterates files in descending order to prevent `os.rename` from silently overwriting siblings — multi-domain renames are the first caller to hit this; the latent collision bug was fixed at the same time as this feature.
 
 ## Mode Toggles (TOML / env vars)
 
@@ -92,6 +96,13 @@ All can be set in `parameters.toml` or overridden via env var (env wins):
 - **`preprocess_only`** (default `false`) — Skip the WRF stage; run preprocess through `real.exe` and exit. Inputs left in local `run_path` for inspection.
 - **`cleanup_inputs`** (default `true`) — When true: deletes intermediate preprocessing files (met_em, ERA5 NetCDF, WPS int files) locally during the run. When false: keeps everything for inspection / re-running.
 - **`run_uuid`** (default: newly generated) — 13-char hex identifier for the run. Precedence: env > TOML > generated. Used as the S3 prefix for chunked-mode wrfrst handoff.
+
+### ndown mode (single vs nested-run)
+
+Activated when `[ndown.input].path` is set in TOML. `check_ndown_params` infers the mode from `[domains].run`:
+
+- **Single** (`run = [N]`, `N != 1`): existing behaviour — ndown 1→N, then wrf.exe runs N standalone.
+- **Nested-run** (`run = [N, M, ...]`): ndown 1→N, then wrf.exe runs N + the listed nested children in a single invocation with two-way nesting. Each subsequent domain's TOML `parent_id` must point at a domain earlier in the list (validated in `check_ndown_params`). Only available in the single-stage path today; the unified per-chunk path silently ignores `ndown_mode`/`nested_run_domains` (see comment in `run_chunked_pipeline`).
 
 ### `[restart]` section — chunked WRF runs
 
@@ -103,7 +114,7 @@ Enables the unified per-chunk mode and configures wrfrst checkpointing.
 
 **Spin-up handling (`begin_hours > 0`):** the orchestrator submits chunks over the *extended* window `(user_start_date − begin_hours) → end_date`, not just the output window. So with `interval_days=7` and `begin_hours=672` (4-week spin-up), `NUM_CHUNKS = ceil((sim_window + spin_up) / interval_days)` — e.g. a 1-year run becomes 57 chunks instead of 53. Each chunk's container computes `remaining_begin_h = max(0, original_begin_hours − elapsed_since_real_sim_start)` from its auto-detected `chunk_start` and writes that into `history_begin_h_<n>`. Chunks fully inside the spin-up window write no wrfout (just the `write_hist_at_0h_rst` chunk-boundary frame); the first chunk straddling `user_start_date` produces the first real output. Captured at module-load: `params._original_begin_hours`. Side-effect of `set_chunk_dates`: `params._chunked_mode_active=True`, which `set_params.set_nml_params` reads to skip the single-stage `start_date.subtract(history_begin)` step (chunk_start already represents the real WRF start in chunked mode, so subtracting again would double-count).
 
-**Image consolidation:** the same `wrf-auto-runs-intel-wvt:1.8+` image runs both preprocess and WRF in unified mode — the intel WPS is built dmpar (option 10 in `wrf-wps-intel-wvt/Dockerfile`) so `metgrid.exe`/`real.exe` parallelize via `mpirun -n N`.
+**Image consolidation:** the same `wrf-auto-runs-intel-wvt:1.8+` (current: 1.12) image runs both preprocess and WRF in unified mode — the intel WPS is built dmpar (option 10 in `wrf-wps-intel-wvt/Dockerfile`) so `metgrid.exe`/`real.exe` parallelize via `mpirun -n N`.
 
 **Wrfrst round-trip:** every chunk iteration re-downloads wrfrst from S3 even in the in-container loop case (where the wrfrst is technically already local). This is intentional: `run_real` rmtrees `run_path`, and rather than stash/restore wrfrst across that operation, we let every iteration look like a fresh container start. Cost is one wrfrst-sized download per chunk (~500 MB–1 GB); trivial vs. the ~2.6 TB of wrffdda re-downloads this design eliminates.
 

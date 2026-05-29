@@ -144,7 +144,10 @@ def run_chunked_pipeline(run_uuid):
 
         # ---- Preprocess (existing pipeline functions, scoped to this chunk's window) ----
         domains = _resolve_domains()
-        ndown_check, domains_init = check_ndown_params(domains)
+        # Unified per-chunk mode doesn't run ndown today, so we ignore ndown_mode /
+        # nested_run_domains here. If multi-domain nested ndown ever lands in the chunked
+        # path, wire them in alongside the run_ndown call.
+        ndown_check, _ndown_mode, _nested_run_domains, domains_init = check_ndown_params(domains)
         src_n_domains, domains = check_nml_params(domains)
         if domains_init is None:
             domains_init = list(domains)
@@ -195,13 +198,20 @@ def run_chunked_pipeline(run_uuid):
         # write_hist_at_0h_rst — which we need on the COLD START chunk too, otherwise WRF uses its default
         # restart_interval of 500000 minutes (~347 days) and never writes a wrfrst within a 1-day chunk.
         # On chunks 2+ we additionally download the prior wrfrst and apply restart=.true. + start_date* overrides.
-        interval_minutes = params.restart_interval_days * 24 * 60
+        #
+        # Derive restart_interval from the ACTUAL chunk length (chunk_end - chunk_start), not the static
+        # restart_interval_days. For full-length chunks the two are equal, but the final chunk is shorter
+        # (chunk_end = min(chunk_start + interval_days, sim_end)). If we used the static value, WRF would
+        # never write a wrfrst for the final partial chunk — and the next loop iteration's detect_remote_restart_state
+        # would still find only the previous chunk's wrfrst, so chunk_start < sim_end and the loop would rerun
+        # the final chunk forever.
+        interval_minutes = int((chunk_end - chunk_start).total_seconds() / 60)
         if restart_state is not None:
             print(f'-- Downloading wrfrst from S3 inputs/{run_uuid}/...')
             download_wrfrst_to_run_path(run_uuid)
         apply_restart_namelist(restart_state, interval_minutes, end_date_override=chunk_end)
         if restart_state is not None:
-            print(f'-- Restarting from {restart_state}; chunk_end_override={chunk_end}')
+            print(f'-- Restarting from {restart_state}; chunk_end_override={chunk_end}, restart_interval={interval_minutes}min')
         else:
             print(f'-- Cold start chunk; restart_interval={interval_minutes}min, chunk_end_override={chunk_end}')
 
@@ -245,7 +255,7 @@ if params.restart_enable and not params.preprocess_only:
 else:
     domains = _resolve_domains()
 
-    ndown_check, domains_init = check_ndown_params(domains)
+    ndown_check, ndown_mode, nested_run_domains, domains_init = check_ndown_params(domains)
 
     src_n_domains, domains = check_nml_params(domains)
 
@@ -312,13 +322,30 @@ else:
 
     if ndown_check:
 
-        print('-- Running ndown.exe...')
-        ndown_interval = run_ndown(run_uuid, del_old=params.cleanup_inputs)
-
-        start_date, end_date, hour_interval, outputs = set_nml_params(domains)
-        set_ndown_params(ndown_interval)
-
-        rename_dict = {'_d01_': f'_d{domains[-1]:02d}_'}
+        print(f'-- Running ndown.exe (mode={ndown_mode})...')
+        if ndown_mode == "single":
+            ndown_interval = run_ndown(run_uuid, mode="single", del_old=params.cleanup_inputs)
+            start_date, end_date, hour_interval, outputs = set_nml_params(domains)
+            set_ndown_params(ndown_interval)
+            rename_dict = {'_d01_': f'_d{domains[-1]:02d}_'}
+        else:  # "nested-run"
+            ndown_interval = run_ndown(
+                run_uuid,
+                mode="nested-run",
+                post_n_domains=len(nested_run_domains),
+                del_old=params.cleanup_inputs,
+            )
+            # Rebuild namelist for the post-ndown nested wrf.exe run. set_nml_params
+            # slices and renumbers per-domain TOML arrays via update_geogrid /
+            # broadcast_field, and sets input_from_file = [True] * n_domains so the
+            # inner nest reads its IC from its own wrfinput_d0N (produced by real.exe
+            # in the upstream metgrid+real pass, then renumbered by run_ndown's
+            # _promote_after_nested_ndown).
+            start_date, end_date, hour_interval, outputs = set_nml_params(nested_run_domains)
+            set_ndown_params(ndown_interval)
+            rename_dict = {
+                f'_d{i+1:02d}_': f'_d{d:02d}_' for i, d in enumerate(nested_run_domains)
+            }
 
     else:
         rename_dict = _build_rename_dict(ndown_check, domains)

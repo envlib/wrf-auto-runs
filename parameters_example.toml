@@ -255,10 +255,26 @@ feedback = 0                            # One-way (0) or two-way (1) nesting
 # tags = {task = 'wrf run'}                # Tags attached to Sentry events
 
 # =============================================================================
-# ndown (one-way nesting) -- optional. Run a child domain using output from a
-# prior coarser WRF run as boundary conditions. Requires a single non-domain-1
-# domain (e.g. domains = [3]). The [ndown.input] section specifies the rclone
-# remote where the prior parent wrfout files are stored.
+# ndown -- optional. Run a child domain (or a nested subtree) using output
+# from a prior coarser WRF run as boundary conditions. The [ndown.input]
+# section is an rclone remote that holds the prior parent wrfout files.
+#
+# Two modes, selected by the length of [domains].run:
+#
+#   Single (run = [N]):
+#     ndown produces wrfinput_dN / wrfbdy_dN from the prior parent's wrfout
+#     (downloaded from [ndown.input]). wrf.exe then runs domain N standalone.
+#     Example: run = [3] downscales a prior d02 run to d03.
+#
+#   Nested-run (run = [N, M, ...] where each subsequent domain's parent
+#   appears earlier in the list):
+#     ndown produces wrfinput_dN / wrfbdy_dN as above, then wrf.exe runs
+#     N + the listed nested children in a single invocation using two-way
+#     nesting. The inner nests get their boundary conditions from the
+#     in-run WRF simulation of N, not a second ndown call.
+#     Example (12km d01 -> 3km d02 -> 1km d03, prior run was 12km):
+#         run = [2, 3]
+#     yields: ndown 12km->3km, then wrf.exe runs 3km + 1km nested.
 # =============================================================================
 
 # [ndown]

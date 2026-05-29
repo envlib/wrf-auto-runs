@@ -43,6 +43,11 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
 
         if 'path' in remote:
             out_path = pathlib.Path(remote.pop('path'))
+            # Register the 'output' remote in the rclone config file. Without this, the
+            # single-stage pipeline never creates the [output] section (only the chunked
+            # pipeline does, via upload_namelists._resolve_remote_output), so rclone fails
+            # with "didn't find section in config file".
+            utils.create_rclone_config(name, params.data_path, remote)
         else:
             out_path = None
     else:
@@ -67,9 +72,14 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
         # Glob mode (out_files=None) — accept any wrfout/wrfxtrm/wrfzlevels file regardless of
         # timestamp. Necessary for restart chunks where WRF's first wrfout is offset from
         # chunk_start by history_interval (e.g. a Feb13 chunk's first file is named ..._03:00:00).
-        files = utils.query_out_files(run_path)
+        # include_xtrm=True: pick up wrfxtrm progressively during the run instead of holding
+        # them all until WRF exits — otherwise a 28-day chunk's wrfxtrm files sit on disk for
+        # the entire wallclock and are lost if anything kills the container mid-chunk.
+        files = utils.query_out_files(run_path, include_xtrm=True)
 
-        files = utils.select_files_to_ul(files, 1)
+        # wrfxtrm_skip_newest=True: WRF is still writing the most recent wrfxtrm file; uploading
+        # and deleting it would yank the file out from under WRF mid-write.
+        files = utils.select_files_to_ul(files, 1, wrfxtrm_skip_newest=True)
 
         if files and out_path is not None:
             if params.output_variables:

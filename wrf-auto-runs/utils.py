@@ -135,9 +135,18 @@ def query_out_files(run_path, out_files=None, include_xtrm=False):
 #     return out_files
 
 
-def select_files_to_ul(out_files, min_files):
-    """
+def select_files_to_ul(out_files, min_files, wrfxtrm_skip_newest=False):
+    """Flatten out_files into a list of file paths to upload.
 
+    For each (out_name, domain) group:
+    - wrfout / wrfzlevels: upload file_paths[min_files:] (skip the `min_files` newest).
+      During polling pass min_files=1 to skip the file WRF is still writing; at post-success
+      pass min_files=0 (or 1 if the chunk ends exactly on midnight and the newest wrfout is
+      a deceptive partial-day file).
+    - wrfxtrm: special-cased because at chunk-end ALL wrfxtrm files are complete (each covers
+      `n_days_per_file` days and is closed when that period ends), so we want them all even
+      when the corresponding wrfout would be skipped. During polling, however, the newest
+      wrfxtrm may still be being written — pass wrfxtrm_skip_newest=True to skip it.
     """
     files = []
     for grp, file_paths in out_files.items():
@@ -145,7 +154,11 @@ def select_files_to_ul(out_files, min_files):
         n_files = len(file_paths)
         file_paths.sort(reverse=True)
         if out_name == 'wrfxtrm':
-            files.extend(file_paths)
+            if wrfxtrm_skip_newest and n_files > 1:
+                files.extend(file_paths[1:n_files])
+            elif not wrfxtrm_skip_newest:
+                files.extend(file_paths)
+            # else: only one wrfxtrm and we're told to skip the newest → upload nothing this poll
         elif n_files > min_files:
             files.extend(file_paths[min_files:n_files])
 
@@ -158,7 +171,11 @@ def rename_files(files, rename_dict):
     """
     if rename_dict:
         new_files = set()
-        for file_path in files:
+        # Descending sort so high-numbered domains (e.g., wrfout_d02_...) move
+        # to their new slot (d03) BEFORE a lower-numbered file (wrfout_d01_...)
+        # renames into the d02 slot. Without this, os.rename silently overwrites
+        # the d02 file on POSIX and the higher-domain data is destroyed.
+        for file_path in sorted(files, reverse=True):
             orig_path, orig_file_name = os.path.split(file_path)
             for orig, new in rename_dict.items():
                 if orig in orig_file_name:
@@ -290,11 +307,15 @@ def ul_output_files(files, run_path, name, out_path, config_path):
 
     mins = round(diff.total_minutes(), 1)
 
-    if p.stderr == '':
+    if p.returncode == 0:
         for file in files:
             if os.path.exists(file):
                 os.remove(file)
         print(f'-- Upload successful in {mins} mins')
+    else:
+        print(f'-- Upload FAILED in {mins} mins (rclone exit {p.returncode})')
+        if p.stderr:
+            print(f'   rclone stderr:\n{p.stderr.strip()}')
 
 
 def recalc_geogrid(geogrid, domains):

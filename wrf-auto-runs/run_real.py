@@ -16,6 +16,7 @@ import shutil
 import copy
 
 import params
+import utils
 
 ############################################
 ### Parameters
@@ -106,6 +107,9 @@ def run_real(run_uuid, del_old=True):
 
             if 'path' in remote:
                 out_path = pathlib.Path(remote.pop('path'))
+                # Register the 'output' remote in the rclone config (single-stage path
+                # doesn't otherwise create it; see monitor_wrf.py for the same fix).
+                utils.create_rclone_config(name, params.data_path, remote)
             else:
                 out_path = None
 

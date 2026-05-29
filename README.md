@@ -137,7 +137,16 @@ Rclone configuration for data transfer (uses rclone config syntax).
 
 ### `[ndown]`
 
-Optional one-way nesting from a prior WRF run. Requires a single non-domain-1 domain (e.g. `run = [3]`). The `[ndown.input]` sub-section specifies the rclone remote where prior parent-domain wrfout files are stored.
+Optional downscaling from a prior WRF run. The `[ndown.input]` sub-section specifies the rclone remote where prior parent-domain wrfout files are stored. Two modes, selected by the length of `[domains].run`:
+
+- **Single (`run = [N]`)** — `ndown.exe` produces `wrfinput_dN` / `wrfbdy_dN` from the prior parent's wrfout, then `wrf.exe` runs domain N standalone. Example: `run = [3]` downscales a prior d02 wrfout to d03.
+
+- **Nested-run (`run = [N, M, ...]`)** — `ndown.exe` produces `wrfinput_dN` / `wrfbdy_dN` as above, then `wrf.exe` runs N plus the listed nested children in a single invocation using two-way nesting. The inner nests get their boundary conditions from the in-run WRF simulation of N, **not** a second `ndown.exe` call. Each subsequent domain's `parent_id` must point at a domain earlier in the list. Example for a 12km → 3km → 1km hierarchy where the 12km has already been run:
+
+  ```toml
+  [domains]
+  run = [2, 3]            # ndown 12km→3km, then wrf.exe runs 3km + 1km nested
+  ```
 
 **ndown and output variable filtering:** `ndown.exe` requires essentially **all** wrfout variables. It calls `input_history()` which reads every registered state variable from the coarse-domain wrfout file — all 3D atmospheric fields (U, V, W, T, P, PB, PH, PHB, MU, MUB, moisture species), all surface and soil fields, vertical coordinate data, and 119 additional fields flagged for ndown interpolation in the WRF Registry (land use, urban, radiation accumulators, ocean mixed-layer, etc.). Because of this, wrfout files that have been filtered with `output_presets` or `output_variables` should not be used as ndown input — missing variables will cause ndown to fail. The pipeline already handles this correctly: wrfout files downloaded for ndown input are never filtered.
 
@@ -207,7 +216,9 @@ Set `preprocess_only = true` in `parameters.toml` to run preprocessing only and 
 11. Run `metgrid.exe` (horizontal interpolation; parallel via `n_cores_preprocess` on dmpar builds)
 12. Auto-detect `num_metgrid_levels` from met_em files and update namelist
 13. Run `real.exe` (vertical interpolation and initial/boundary conditions)
-14. Run `ndown.exe` (ndown mode only)
+14. Run `ndown.exe` (ndown mode only). On success:
+    - **Single mode** (`run = [N]`): delete the coarse-parent `*_d01` files and rename the ndown-produced `*_d02` files into the `*_d01` slot. `wrf.exe` then runs domain N as a 1-domain simulation; outputs get renamed back to `_d{N}_` on upload.
+    - **Nested-run mode** (`run = [N, M, ...]`): delete the coarse-parent `*_d01` and `geo_em.d01.nc` files, then shift every other domain down by one slot in ascending order (`d02 → d01`, `d03 → d02`, ...). The namelist is rebuilt for the post-promote `nested_run_domains` set, `wrf.exe` runs that subtree with two-way nesting in a single invocation, and outputs get renamed back to user-space `_d{M}_` numbering on upload.
 15. (`preprocess_only=true`) Print "preprocessing complete; inputs left in run_path" and exit
 16. Otherwise run `wrf.exe`, poll for completed output files, upload in real-time
 

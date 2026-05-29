@@ -65,16 +65,23 @@ def run_geogrid(src_n_domains, domains, rm_existing=True):
             if src_file_path != dst_file_path:
                 os.rename(src_file_path, dst_file_path)
 
+    # Use the full XLAT_M / XLONG_M arrays (not just the 4 corner_lats / corner_lons
+    # attributes) because for Lambert conformal and other conic projections, the extreme
+    # lat/lon points sit on the edges between corners, not at the corners themselves.
+    # Computing bounds from only corners under-estimates the actual domain extent and
+    # causes downstream ERA5/met_em to be clipped short of the WRF grid, producing
+    # "missing values" failures in metgrid for the cells just outside the requested bbox.
     with h5netcdf.File(params.data_path.joinpath('geo_em.d01.nc')) as f:
-        corner_lats = f.attrs['corner_lats']
-        corner_lons = f.attrs['corner_lons']
+        all_lats = np.asarray(f['XLAT_M'][0])
+        all_lons = np.asarray(f['XLONG_M'][0])
 
-    corner_lons = [lon if lon > 0 else 360 + lon for lon in corner_lons]
+    # Normalize to 0-360 convention (matches the existing corner-based logic).
+    all_lons = np.where(all_lons < 0, all_lons + 360, all_lons)
 
-    min_lon = np.floor(np.min(corner_lons))
-    max_lon = np.ceil(np.max(corner_lons))
-    min_lat = np.floor(np.min(corner_lats))
-    max_lat = np.ceil(np.max(corner_lats))
+    min_lon = np.floor(np.min(all_lons))
+    max_lon = np.ceil(np.max(all_lons))
+    min_lat = np.floor(np.min(all_lats))
+    max_lat = np.ceil(np.max(all_lats))
 
     return min_lon, min_lat, max_lon, max_lat
 
