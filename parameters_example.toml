@@ -1,12 +1,18 @@
 # Number of MPI processes for wrf.exe (via mpirun -n)
 n_cores = 8
 
-# Number of MPI processes for the preprocessing executables (metgrid.exe, real.exe, ndown.exe).
-# Default is 4. Bump higher (8–16) to speed up long preprocessing runs (especially metgrid).
+# Number of MPI processes for real.exe / ndown.exe.
+# Default is 4. Bump higher (8–16) to speed up long preprocessing runs.
 # Requires WPS to be compiled with dmpar (the gfortran preprocess image is built dmpar from
 # wrf-wps-wvt-debian:1.3 onward). When running via SLURM, ensure the job's --ntasks is at
 # least this value.
 # n_cores_preprocess = 4
+
+# Number of MPI processes for metgrid.exe specifically. Defaults to n_cores_preprocess.
+# metgrid is I/O-bound and scales poorly: running it at high rank counts (e.g. matching wrf.exe)
+# triggers an intermittent SIGSEGV that disappears on a plain rerun. Keep this low (4–8) for
+# stability — it costs almost no wall-clock since metgrid barely speeds up past ~8 ranks.
+# n_cores_metgrid = 6
 
 # Preprocessing-only mode. When true, runs every step up through real.exe / ndown.exe,
 # then exits without running wrf.exe. Useful for testing the preprocessing chain in isolation;

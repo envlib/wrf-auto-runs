@@ -57,6 +57,9 @@ if 'n_cores' in os.environ:
 if 'n_cores_preprocess' in os.environ:
     file['n_cores_preprocess'] = int(os.environ['n_cores_preprocess'])
 
+if 'n_cores_metgrid' in os.environ:
+    file['n_cores_metgrid'] = int(os.environ['n_cores_metgrid'])
+
 if 'duration_hours' in os.environ:
     file['time_control']['duration_hours'] = int(os.environ['duration_hours'])
 
@@ -100,6 +103,11 @@ is_wrf_input = 'remote' in file and 'wrf' in file.get('remote', {})
 preprocess_only = file.get('preprocess_only', False)
 cleanup_inputs = file.get('cleanup_inputs', True)
 n_cores_preprocess = int(file.get('n_cores_preprocess', 4))
+# metgrid.exe is I/O-bound and scales poorly; high MPI rank counts amplify an intermittent
+# SIGSEGV (over-decomposition / ASLR-sensitive out-of-bounds — "fails then passes on rerun").
+# Decoupled from n_cores_preprocess (which still drives real.exe / ndown.exe). Defaults to
+# n_cores_preprocess for backward compatibility; set lower (4–8) to stabilise metgrid.
+n_cores_metgrid = int(file.get('n_cores_metgrid', n_cores_preprocess))
 
 # [restart] section — config for chunked WRF runs.
 _restart_cfg = file.get('restart', {})
