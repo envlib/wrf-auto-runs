@@ -128,7 +128,7 @@ Enables the unified per-chunk mode and configures wrfrst checkpointing.
 
 - **`n_cores`** (default 8) — MPI ranks for `wrf.exe`.
 - **`n_cores_preprocess`** (default 4) — MPI ranks for `real.exe` / `ndown.exe`. Requires the gfortran preprocess image (`wrf-auto-runs-wvt:1.6+`) which has dmpar WPS.
-- **`n_cores_metgrid`** (default: `n_cores_preprocess`) — MPI ranks for `metgrid.exe` only, decoupled from `real.exe`/`ndown.exe`. metgrid is I/O-bound and scales poorly; running it at high rank counts (e.g. the chunked SLURM pattern forces `n_cores_preprocess=SLURM_NTASKS`) triggers an intermittent SIGSEGV that passes on a plain rerun (over-decomposition / ASLR-sensitive out-of-bounds, not memory pressure). Keep it low (4–8). Set in TOML or via the `n_cores_metgrid` env var (env wins).
+- **`n_cores_metgrid`** (default 4) — MPI ranks for `metgrid.exe` only, decoupled from `real.exe`/`ndown.exe`. Defaults to a fixed 4 regardless of `n_cores_preprocess`, so existing configs get stable metgrid without edits. metgrid is I/O-bound and scales poorly; running it at high rank counts (e.g. the chunked SLURM pattern forces `n_cores_preprocess=SLURM_NTASKS`) triggers an intermittent SIGSEGV that passes on a plain rerun (over-decomposition / ASLR-sensitive out-of-bounds, not memory pressure). Keep it low (4–8). Set in TOML or via the `n_cores_metgrid` env var (env wins).
 
 ## S3 Layout
 

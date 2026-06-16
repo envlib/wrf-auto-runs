@@ -105,9 +105,10 @@ cleanup_inputs = file.get('cleanup_inputs', True)
 n_cores_preprocess = int(file.get('n_cores_preprocess', 4))
 # metgrid.exe is I/O-bound and scales poorly; high MPI rank counts amplify an intermittent
 # SIGSEGV (over-decomposition / ASLR-sensitive out-of-bounds — "fails then passes on rerun").
-# Decoupled from n_cores_preprocess (which still drives real.exe / ndown.exe). Defaults to
-# n_cores_preprocess for backward compatibility; set lower (4–8) to stabilise metgrid.
-n_cores_metgrid = int(file.get('n_cores_metgrid', n_cores_preprocess))
+# Decoupled from n_cores_preprocess (which still drives real.exe / ndown.exe). Defaults to a
+# safe low value (4) regardless of n_cores_preprocess, so existing configs get stable metgrid
+# without changes; raise it (up to ~8) only if you specifically need faster metgrid.
+n_cores_metgrid = int(file.get('n_cores_metgrid', 4))
 
 # [restart] section — config for chunked WRF runs.
 _restart_cfg = file.get('restart', {})

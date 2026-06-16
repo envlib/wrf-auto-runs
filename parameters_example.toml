@@ -8,11 +8,12 @@ n_cores = 8
 # least this value.
 # n_cores_preprocess = 4
 
-# Number of MPI processes for metgrid.exe specifically. Defaults to n_cores_preprocess.
-# metgrid is I/O-bound and scales poorly: running it at high rank counts (e.g. matching wrf.exe)
-# triggers an intermittent SIGSEGV that disappears on a plain rerun. Keep this low (4–8) for
-# stability — it costs almost no wall-clock since metgrid barely speeds up past ~8 ranks.
-# n_cores_metgrid = 6
+# Number of MPI processes for metgrid.exe specifically. Default is 4 (independent of
+# n_cores_preprocess). metgrid is I/O-bound and scales poorly: running it at high rank counts
+# (e.g. matching wrf.exe) triggers an intermittent SIGSEGV that disappears on a plain rerun.
+# Keep this low (4–8) for stability — it costs almost no wall-clock since metgrid barely speeds
+# up past ~8 ranks.
+# n_cores_metgrid = 4
 
 # Preprocessing-only mode. When true, runs every step up through real.exe / ndown.exe,
 # then exits without running wrf.exe. Useful for testing the preprocessing chain in isolation;
