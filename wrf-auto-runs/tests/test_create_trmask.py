@@ -16,9 +16,19 @@ LAT_2D, LON_2D = np.meshgrid(LAT_1D, LON_1D, indexing='ij')
 LANDMASK_2D = np.zeros((SN, WE), dtype=np.float32)
 LANDMASK_2D[:, :5] = 1.0  # left half is land
 
+# Dateline-crossing longitude grid: ascending eastward from +150 across +/-180
+# to -166 (i.e. 150..178E, then 182..194E expressed as -178..-166 in -180..180).
+LON_1D_DL = np.array([150, 156, 162, 168, 174, 178, -178, -174, -170, -166], dtype=np.float32)
+_, LON_2D_DL = np.meshgrid(LAT_1D, LON_1D_DL, indexing='ij')
 
-def _write_fake_geo_em(path, e_vert=10):
-    """Write a minimal geo_em.d01.nc that create_trmask can read."""
+
+def _write_fake_geo_em(path, e_vert=10, lon=None):
+    """Write a minimal geo_em.d01.nc that create_trmask can read.
+
+    `lon` overrides the default LON_2D grid (e.g. a dateline-crossing grid).
+    """
+    if lon is None:
+        lon = LON_2D
     with h5netcdf.File(path, 'w') as f:
         f.dimensions['Time'] = 1
         f.dimensions['south_north'] = SN
@@ -27,7 +37,7 @@ def _write_fake_geo_em(path, e_vert=10):
         lat_var = f.create_variable('XLAT_M', ('Time', 'south_north', 'west_east'), dtype='f4')
         lat_var[0, :, :] = LAT_2D
         lon_var = f.create_variable('XLONG_M', ('Time', 'south_north', 'west_east'), dtype='f4')
-        lon_var[0, :, :] = LON_2D
+        lon_var[0, :, :] = lon
         lm_var = f.create_variable('LANDMASK', ('Time', 'south_north', 'west_east'), dtype='f4')
         lm_var[0, :, :] = LANDMASK_2D
 
@@ -134,6 +144,84 @@ class TestCreateTrmaskBbox:
 
         expected = np.zeros((SN, WE), dtype=np.float32)
         expected[3:9, 1:8] = 1.0
+        np.testing.assert_array_equal(mask, expected)
+
+
+class TestCreateTrmaskDateline:
+    """Bbox restrictions on a domain crossing the antimeridian (XLONG in
+    -180..180). A bbox with min_lon > max_lon wraps the dateline (OR semantics)."""
+
+    def test_ocean_plus_bbox_wraps_dateline(self, mock_params, tmp_path):
+        """min_lon=162, max_lon=-170 keeps the eastward arc 162E..-170 across
+        +/-180. Intersected with ocean (cols 5..9) -> cols 5..8."""
+        _write_fake_geo_em(tmp_path / 'geo_em.d01.nc', lon=LON_2D_DL)
+        _configure(
+            mock_params,
+            {
+                'mask_type': 'ocean',
+                'relax_width': 0,
+                'min_lat': -90.0,
+                'max_lat': 90.0,
+                'min_lon': 162.0,
+                'max_lon': -170.0,
+            },
+        )
+
+        create_trmask([1], START)
+
+        mask = _read_trmask(tmp_path / 'trmask_d01')
+
+        expected = np.zeros((SN, WE), dtype=np.float32)
+        expected[:, 5:9] = 1.0  # lon in {178, -178, -174, -170} AND ocean
+        np.testing.assert_array_equal(mask, expected)
+
+    def test_all_plus_bbox_wraps_dateline(self, mock_params, tmp_path):
+        """Same wrap with mask_type='all': keep every col on the eastward arc
+        162E..-170 -> cols 2..8 (lon >= 162 OR lon <= -170)."""
+        _write_fake_geo_em(tmp_path / 'geo_em.d01.nc', lon=LON_2D_DL)
+        _configure(
+            mock_params,
+            {
+                'mask_type': 'all',
+                'relax_width': 0,
+                'min_lat': -90.0,
+                'max_lat': 90.0,
+                'min_lon': 162.0,
+                'max_lon': -170.0,
+            },
+        )
+
+        create_trmask([1], START)
+
+        mask = _read_trmask(tmp_path / 'trmask_d01')
+
+        expected = np.zeros((SN, WE), dtype=np.float32)
+        expected[:, 2:9] = 1.0  # lon 162,168,174,178,-178,-174,-170
+        np.testing.assert_array_equal(mask, expected)
+
+    def test_nonwrap_bbox_on_dateline_grid(self, mock_params, tmp_path):
+        """Regression: a normal box (min_lon <= max_lon) on the same grid keeps
+        AND semantics and excludes the negative-lon (east-of-dateline) columns.
+        min_lon=162, max_lon=178 -> cols 2..5 only."""
+        _write_fake_geo_em(tmp_path / 'geo_em.d01.nc', lon=LON_2D_DL)
+        _configure(
+            mock_params,
+            {
+                'mask_type': 'all',
+                'relax_width': 0,
+                'min_lat': -90.0,
+                'max_lat': 90.0,
+                'min_lon': 162.0,
+                'max_lon': 178.0,
+            },
+        )
+
+        create_trmask([1], START)
+
+        mask = _read_trmask(tmp_path / 'trmask_d01')
+
+        expected = np.zeros((SN, WE), dtype=np.float32)
+        expected[:, 2:6] = 1.0  # lon 162,168,174,178
         np.testing.assert_array_equal(mask, expected)
 
 

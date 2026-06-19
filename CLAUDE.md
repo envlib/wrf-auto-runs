@@ -18,11 +18,13 @@ Unified per-chunk is the standard workflow because per-chunk preprocess avoids t
 
 | Image | Compiler | WPS build | Use |
 |---|---|---|---|
-| `mullenkamp/wrf-auto-runs-intel-wvt:1.12` | Intel oneAPI | dmpar | **Default for all modes** — unified per-chunk, single-stage, preprocess-only. Built on base `wrf-wps-intel-wvt-ubuntu:1.5`. |
+| `mullenkamp/wrf-auto-runs-intel-wvt:1.14` | Intel oneAPI | dmpar | **Default for all modes** — unified per-chunk, single-stage, preprocess-only. Built on base `wrf-wps-intel-wvt-ubuntu:1.5`. |
 | `mullenkamp/wrf-auto-runs-wvt:1.7` | gfortran | dmpar | Backup. Short single-stage runs |
 | `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | Non-WVT variant |
 
 Both WPS builds inject heap-array allocation flags (`-fno-stack-arrays` for gfortran, `-heap-arrays` for Intel) — required for stable long preprocessing runs (without them metgrid segfaults in libc partway through). See `~/.claude/projects/.../memory/wps_heap_arrays_requirement.md` and `wrf-docker-builds/CLAUDE.md`.
+
+**Image 1.14 adds antimeridian-crossing WVT source masks**: the `[wvt]` bbox in `create_trmask.py` now accepts `min_lon > max_lon` to select a dateline-spanning arc (OR semantics, in XLONG's -180..180 frame), needed for NZ Lambert domains whose east edge passes 180. Non-wrapping boxes are unchanged.
 
 **Image 1.12 adds native runtime column diagnostics** (`phys/module_diag_wvt_columns.F` in the WVT branch): 8 new 2D fields written at history-write time — `PWAT`, `PWAT_TR`, `SLP`, `VIMF_U`, `VIMF_V`, `VIMF_TR_U`, `VIMF_TR_V`, `IVT`. Formulas match cfdb-ingest's offline computation exactly (validated to ~1e-7 relative agreement), so the 3D source fields (`QVAPOR`, `qv_tr`, `U`, `V`) can be dropped from `output_variables` for ~30× wrfout storage reduction. The `mslp` and `pwat` lowercase names in older configs were cfdb-ingest-derived only and no longer needed — use the uppercase native names.
 

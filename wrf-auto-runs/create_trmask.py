@@ -65,7 +65,11 @@ def create_trmask(domains, start_date):
         raise ValueError(f'Unknown mask_type: {mask_type}. Use land, ocean, or all.')
 
     # Optional bbox restriction applied on top of mask_type. All four bounds
-    # must be provided together; partial bounds raise an error.
+    # must be provided together; partial bounds raise an error. Bounds are in
+    # XLONG's -180..180 frame. A bbox with min_lon > max_lon is interpreted as
+    # crossing the antimeridian (dateline): it keeps the eastward arc from
+    # min_lon, across +180/-180, to max_lon. Needed for domains that span the
+    # dateline (e.g. NZ Lambert domains with an east edge beyond 180).
     bbox_keys = ('min_lat', 'max_lat', 'min_lon', 'max_lon')
     bbox_values = {k: wvt_config.get(k) for k in bbox_keys}
     bbox_present = [k for k, v in bbox_values.items() if v is not None]
@@ -114,8 +118,15 @@ def create_trmask(domains, start_date):
 
         # Apply optional bbox restriction on top of the mask_type selection
         if has_bbox:
-            bbox_mask = np.where((lat >= min_lat) & (lat <= max_lat) & (lon >= min_lon) & (lon <= max_lon), 1.0, 0.0)
-            mask = mask * bbox_mask
+            lat_in = (lat >= min_lat) & (lat <= max_lat)
+            if min_lon <= max_lon:
+                lon_in = (lon >= min_lon) & (lon <= max_lon)
+            else:
+                # Antimeridian-crossing box: keep lon >= min_lon (east of the
+                # western bound, up to +180) OR lon <= max_lon (across -180, up
+                # to the eastern bound).
+                lon_in = (lon >= min_lon) | (lon <= max_lon)
+            mask = mask * np.where(lat_in & lon_in, 1.0, 0.0)
 
         # Zero out relaxation zone
         if relax_width > 0:

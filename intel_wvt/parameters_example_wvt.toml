@@ -139,7 +139,10 @@ tracer3dsink = 0
 #   are set, the mask is further restricted to grid points inside the bbox
 #   (intersected with the mask_type selection). Setting mask_type = "all"
 #   plus a bbox is equivalent to a bbox-only mask. All four bounds must be
-#   provided together -- partial bounds raise an error.
+#   provided together -- partial bounds raise an error. Bounds use XLONG's
+#   -180..180 frame; set min_lon > max_lon to select an antimeridian-crossing
+#   (dateline-spanning) arc, e.g. min_lon = 156.6, max_lon = -170.0 keeps the
+#   eastward arc from 156.6E across 180 to -170.
 #
 # relax_width: number of grid points at domain edges set to 0 (WRF relaxation
 #   zone -- tracers are not conserved there). Defaults to spec_bdy_width from
