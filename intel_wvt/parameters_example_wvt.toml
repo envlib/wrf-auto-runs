@@ -135,14 +135,19 @@ tracer3dsink = 0
 #   "ocean"  - All ocean points (inverse of LANDMASK)
 #   "all"    - Entire domain (all grid points = source)
 #
-# Optional bbox restriction: min_lat, max_lat, min_lon, max_lon. If all four
-#   are set, the mask is further restricted to grid points inside the bbox
-#   (intersected with the mask_type selection). Setting mask_type = "all"
-#   plus a bbox is equivalent to a bbox-only mask. All four bounds must be
-#   provided together -- partial bounds raise an error. Bounds use XLONG's
-#   -180..180 frame; set min_lon > max_lon to select an antimeridian-crossing
-#   (dateline-spanning) arc, e.g. min_lon = 156.6, max_lon = -170.0 keeps the
-#   eastward arc from 156.6E across 180 to -170.
+# Optional bbox restriction (set at most ONE of these; both are intersected
+#   with the mask_type selection and evaluated per-domain):
+#   bbox_deg = [min_lat, max_lat, min_lon, max_lon]  -- geographic degrees.
+#     Bounds use XLONG's -180..180 frame; set min_lon > max_lon for an
+#     antimeridian-crossing arc, e.g. [-90, 90, 156.6, -170] keeps the eastward
+#     arc from 156.6E across 180 to -170.
+#   bbox_ij = [i_min, i_max, j_min, j_max]  -- model-grid cell indices, 0-based
+#     and INCLUSIVE, i = west-east, j = south-north. Straight, equal-area-per-
+#     cell bands that map 1:1 to the grid -- preferred for ocean-fetch
+#     sensitivity tests (no lat/lon distortion). e.g. [38, 276, 0, 323] on a
+#     277x324 grid drops the 38 westmost columns.
+#   (The old min_lat/max_lat/min_lon/max_lon scalar keys are no longer
+#    supported and raise an error -- use bbox_deg instead.)
 #
 # relax_width: number of grid points at domain edges set to 0 (WRF relaxation
 #   zone -- tracers are not conserved there). Defaults to spec_bdy_width from
@@ -152,11 +157,9 @@ tracer3dsink = 0
 [wvt]
 mask_type = "ocean"
 # relax_width = 5  # defaults to spec_bdy_width, usually no need to set explicitly
-# Optional bbox restriction (all four must be set together):
-# min_lat = -42.0
-# max_lat = -38.0
-# min_lon = 168.0
-# max_lon = 175.0
+# Optional bbox restriction -- set at most ONE of bbox_deg / bbox_ij:
+# bbox_deg = [-42.0, -38.0, 168.0, 175.0]   # [min_lat, max_lat, min_lon, max_lon]
+# bbox_ij  = [38, 276, 0, 323]              # [i_min, i_max, j_min, j_max] (0-based inclusive)
 
 # =============================================================================
 # FDDA (grid nudging) -- optional

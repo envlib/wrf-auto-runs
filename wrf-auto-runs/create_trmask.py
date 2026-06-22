@@ -64,23 +64,46 @@ def create_trmask(domains, start_date):
     if mask_type not in ('land', 'ocean', 'all'):
         raise ValueError(f'Unknown mask_type: {mask_type}. Use land, ocean, or all.')
 
-    # Optional bbox restriction applied on top of mask_type. All four bounds
-    # must be provided together; partial bounds raise an error. Bounds are in
-    # XLONG's -180..180 frame. A bbox with min_lon > max_lon is interpreted as
-    # crossing the antimeridian (dateline): it keeps the eastward arc from
-    # min_lon, across +180/-180, to max_lon. Needed for domains that span the
-    # dateline (e.g. NZ Lambert domains with an east edge beyond 180).
-    bbox_keys = ('min_lat', 'max_lat', 'min_lon', 'max_lon')
-    bbox_values = {k: wvt_config.get(k) for k in bbox_keys}
-    bbox_present = [k for k, v in bbox_values.items() if v is not None]
-    bbox_missing = [k for k, v in bbox_values.items() if v is None]
-    if bbox_present and bbox_missing:
-        raise ValueError(f'[wvt] bbox requires all of {list(bbox_keys)} together; missing: {bbox_missing}')
-    has_bbox = len(bbox_present) == 4
-    min_lat = bbox_values['min_lat']
-    max_lat = bbox_values['max_lat']
-    min_lon = bbox_values['min_lon']
-    max_lon = bbox_values['max_lon']
+    # Optional bbox restriction applied on top of the mask_type selection. Two
+    # mutually-exclusive forms (set at most one); both are intersected with the
+    # mask_type mask and evaluated per-domain against that domain's own grid:
+    #   bbox_deg = [min_lat, max_lat, min_lon, max_lon]  -- geographic degrees.
+    #     Bounds are in XLONG's -180..180 frame; min_lon > max_lon selects an
+    #     antimeridian-crossing arc (eastward from min_lon, across +/-180, to max_lon).
+    #   bbox_ij  = [i_min, i_max, j_min, j_max]  -- 0-based, INCLUSIVE model-grid
+    #     cell indices (i = west-east, j = south-north). Straight, equal-area-per-
+    #     cell bands that map 1:1 to the mask array -- preferred for fetch tests.
+    legacy = [k for k in ('min_lat', 'max_lat', 'min_lon', 'max_lon') if k in wvt_config]
+    if legacy:
+        raise ValueError(
+            f'[wvt] {legacy} are no longer supported. Use bbox_deg = '
+            '[min_lat, max_lat, min_lon, max_lon] or bbox_ij = [i_min, i_max, j_min, j_max].'
+        )
+
+    bbox_deg = wvt_config.get('bbox_deg')
+    bbox_ij = wvt_config.get('bbox_ij')
+    if bbox_deg is not None and bbox_ij is not None:
+        raise ValueError('[wvt] set only one of bbox_deg or bbox_ij, not both.')
+
+    def _check4(name, v):
+        if not isinstance(v, (list, tuple)) or len(v) != 4:
+            raise ValueError(f'[wvt] {name} must be a list of 4 values, got {v!r}')
+
+    min_lat = max_lat = min_lon = max_lon = None
+    i_min = i_max = j_min = j_max = None
+    if bbox_deg is not None:
+        _check4('bbox_deg', bbox_deg)
+        min_lat, max_lat, min_lon, max_lon = (float(x) for x in bbox_deg)
+        if min_lat > max_lat:
+            raise ValueError(f'[wvt] bbox_deg needs min_lat <= max_lat; got {min_lat} > {max_lat}')
+        # min_lon > max_lon is allowed (antimeridian-crossing arc)
+    if bbox_ij is not None:
+        _check4('bbox_ij', bbox_ij)
+        i_min, i_max, j_min, j_max = (int(x) for x in bbox_ij)
+        if i_min > i_max or j_min > j_max:
+            raise ValueError(f'[wvt] bbox_ij needs i_min <= i_max and j_min <= j_max; got {bbox_ij}')
+        if i_min < 0 or j_min < 0:
+            raise ValueError(f'[wvt] bbox_ij indices must be >= 0; got {bbox_ij}')
 
     # Format the Times string as WRF expects: "YYYY-MM-DD_HH:MM:SS"
     if hasattr(start_date, 'format'):
@@ -117,7 +140,7 @@ def create_trmask(domains, start_date):
             mask = np.ones_like(lat)
 
         # Apply optional bbox restriction on top of the mask_type selection
-        if has_bbox:
+        if bbox_deg is not None:
             lat_in = (lat >= min_lat) & (lat <= max_lat)
             if min_lon <= max_lon:
                 lon_in = (lon >= min_lon) & (lon <= max_lon)
@@ -127,6 +150,16 @@ def create_trmask(domains, start_date):
                 # to the eastern bound).
                 lon_in = (lon >= min_lon) | (lon <= max_lon)
             mask = mask * np.where(lat_in & lon_in, 1.0, 0.0)
+        elif bbox_ij is not None:
+            # i = west-east (axis 1), j = south-north (axis 0); inclusive bounds.
+            if i_max > we - 1 or j_max > sn - 1:
+                raise ValueError(
+                    f'[wvt] bbox_ij exceeds domain d{domain_idx:02d} grid ({we}x{sn}): '
+                    f'i_max={i_max}, j_max={j_max} (valid max i={we - 1}, j={sn - 1})'
+                )
+            box = np.zeros_like(mask)
+            box[j_min:j_max + 1, i_min:i_max + 1] = 1.0
+            mask = mask * box
 
         # Zero out relaxation zone
         if relax_width > 0:
@@ -145,8 +178,10 @@ def create_trmask(domains, start_date):
         if do_3d:
             parts.append(f'TRMASK3D ({n_vert} levels)')
         bbox_note = ''
-        if has_bbox:
-            bbox_note = f', bbox=lat[{min_lat},{max_lat}] lon[{min_lon},{max_lon}]'
+        if bbox_deg is not None:
+            bbox_note = f', bbox_deg=lat[{min_lat},{max_lat}] lon[{min_lon},{max_lon}]'
+        elif bbox_ij is not None:
+            bbox_note = f', bbox_ij=i[{i_min},{i_max}] j[{j_min},{j_max}]'
         print(
             f'   Created {trmask_path.name} ({mask_type} mask{bbox_note}, '
             f'{we}x{sn}, relax_width={relax_width}, vars: {", ".join(parts)})'

@@ -108,10 +108,7 @@ class TestCreateTrmaskBbox:
             {
                 'mask_type': 'ocean',
                 'relax_width': 0,
-                'min_lat': float(LAT_1D[2]),
-                'max_lat': float(LAT_1D[6]),
-                'min_lon': float(LON_1D[0]),
-                'max_lon': float(LON_1D[-1]),
+                'bbox_deg': [float(LAT_1D[2]), float(LAT_1D[6]), float(LON_1D[0]), float(LON_1D[-1])],
             },
         )
 
@@ -131,10 +128,7 @@ class TestCreateTrmaskBbox:
             {
                 'mask_type': 'all',
                 'relax_width': 0,
-                'min_lat': float(LAT_1D[3]),
-                'max_lat': float(LAT_1D[8]),
-                'min_lon': float(LON_1D[1]),
-                'max_lon': float(LON_1D[7]),
+                'bbox_deg': [float(LAT_1D[3]), float(LAT_1D[8]), float(LON_1D[1]), float(LON_1D[7])],
             },
         )
 
@@ -160,10 +154,7 @@ class TestCreateTrmaskDateline:
             {
                 'mask_type': 'ocean',
                 'relax_width': 0,
-                'min_lat': -90.0,
-                'max_lat': 90.0,
-                'min_lon': 162.0,
-                'max_lon': -170.0,
+                'bbox_deg': [-90.0, 90.0, 162.0, -170.0],
             },
         )
 
@@ -184,10 +175,7 @@ class TestCreateTrmaskDateline:
             {
                 'mask_type': 'all',
                 'relax_width': 0,
-                'min_lat': -90.0,
-                'max_lat': 90.0,
-                'min_lon': 162.0,
-                'max_lon': -170.0,
+                'bbox_deg': [-90.0, 90.0, 162.0, -170.0],
             },
         )
 
@@ -209,10 +197,7 @@ class TestCreateTrmaskDateline:
             {
                 'mask_type': 'all',
                 'relax_width': 0,
-                'min_lat': -90.0,
-                'max_lat': 90.0,
-                'min_lon': 162.0,
-                'max_lon': 178.0,
+                'bbox_deg': [-90.0, 90.0, 162.0, 178.0],
             },
         )
 
@@ -222,6 +207,49 @@ class TestCreateTrmaskDateline:
 
         expected = np.zeros((SN, WE), dtype=np.float32)
         expected[:, 2:6] = 1.0  # lon 162,168,174,178
+        np.testing.assert_array_equal(mask, expected)
+
+
+class TestCreateTrmaskBboxIJ:
+    """Grid-index bbox: [i_min, i_max, j_min, j_max], 0-based inclusive,
+    i = west-east, j = south-north. Intersected with the mask_type selection."""
+
+    def test_bbox_ij_drops_west_columns(self, mock_params, tmp_path):
+        """The real fetch-test use case: keep cols 5..9 -> drops the 5 westmost
+        columns. With mask_type='all' the kept box is exactly those columns."""
+        _write_fake_geo_em(tmp_path / 'geo_em.d01.nc')
+        _configure(mock_params, {'mask_type': 'all', 'relax_width': 0, 'bbox_ij': [5, 9, 0, 9]})
+
+        create_trmask([1], START)
+
+        mask = _read_trmask(tmp_path / 'trmask_d01')
+        expected = np.zeros((SN, WE), dtype=np.float32)
+        expected[:, 5:] = 1.0  # cols 5..9 inclusive
+        np.testing.assert_array_equal(mask, expected)
+
+    def test_bbox_ij_intersects_ocean(self, mock_params, tmp_path):
+        """i 4..8, j 2..6 (inclusive) intersected with ocean (cols 5..9) ->
+        rows 2..6, cols 5..8 (col 4 is land, col 9 is outside the box)."""
+        _write_fake_geo_em(tmp_path / 'geo_em.d01.nc')
+        _configure(mock_params, {'mask_type': 'ocean', 'relax_width': 0, 'bbox_ij': [4, 8, 2, 6]})
+
+        create_trmask([1], START)
+
+        mask = _read_trmask(tmp_path / 'trmask_d01')
+        expected = np.zeros((SN, WE), dtype=np.float32)
+        expected[2:7, 5:9] = 1.0
+        np.testing.assert_array_equal(mask, expected)
+
+    def test_bbox_ij_single_cell_inclusive(self, mock_params, tmp_path):
+        """Inclusive bounds: i_min==i_max, j_min==j_max selects exactly one cell."""
+        _write_fake_geo_em(tmp_path / 'geo_em.d01.nc')
+        _configure(mock_params, {'mask_type': 'all', 'relax_width': 0, 'bbox_ij': [3, 3, 7, 7]})
+
+        create_trmask([1], START)
+
+        mask = _read_trmask(tmp_path / 'trmask_d01')
+        expected = np.zeros((SN, WE), dtype=np.float32)
+        expected[7, 3] = 1.0
         np.testing.assert_array_equal(mask, expected)
 
 
@@ -265,19 +293,42 @@ class TestCreateTrmaskErrors:
         with pytest.raises(ValueError, match='no longer supported'):
             create_trmask([1], START)
 
-    def test_partial_bbox_raises(self, mock_params, tmp_path):
+    def test_legacy_scalar_bbox_keys_raise(self, mock_params, tmp_path):
+        _write_fake_geo_em(tmp_path / 'geo_em.d01.nc')
+        _configure(mock_params, {'mask_type': 'ocean', 'min_lat': -42.0, 'max_lat': -38.0})
+
+        with pytest.raises(ValueError, match='no longer supported'):
+            create_trmask([1], START)
+
+    def test_both_bbox_forms_raise(self, mock_params, tmp_path):
         _write_fake_geo_em(tmp_path / 'geo_em.d01.nc')
         _configure(
             mock_params,
-            {
-                'mask_type': 'ocean',
-                'min_lat': -42.0,
-                'max_lat': -38.0,
-                # min_lon / max_lon missing
-            },
+            {'mask_type': 'ocean', 'bbox_deg': [-45.0, -36.0, 170.0, 179.0], 'bbox_ij': [0, 4, 0, 9]},
         )
 
-        with pytest.raises(ValueError, match='min_lon'):
+        with pytest.raises(ValueError, match='only one of bbox_deg or bbox_ij'):
+            create_trmask([1], START)
+
+    def test_bbox_wrong_length_raises(self, mock_params, tmp_path):
+        _write_fake_geo_em(tmp_path / 'geo_em.d01.nc')
+        _configure(mock_params, {'mask_type': 'ocean', 'bbox_ij': [5, 9, 0]})
+
+        with pytest.raises(ValueError, match='must be a list of 4'):
+            create_trmask([1], START)
+
+    def test_bbox_ij_reversed_bounds_raise(self, mock_params, tmp_path):
+        _write_fake_geo_em(tmp_path / 'geo_em.d01.nc')
+        _configure(mock_params, {'mask_type': 'ocean', 'bbox_ij': [8, 4, 0, 9]})
+
+        with pytest.raises(ValueError, match='i_min <= i_max'):
+            create_trmask([1], START)
+
+    def test_bbox_ij_out_of_range_raises(self, mock_params, tmp_path):
+        _write_fake_geo_em(tmp_path / 'geo_em.d01.nc')
+        _configure(mock_params, {'mask_type': 'all', 'relax_width': 0, 'bbox_ij': [0, 10, 0, 9]})
+
+        with pytest.raises(ValueError, match='exceeds domain'):
             create_trmask([1], START)
 
     def test_unknown_mask_type_raises(self, mock_params, tmp_path):
