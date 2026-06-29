@@ -4,8 +4,8 @@ services:
   wrf-runs:
     build:
       context: ../
-      dockerfile: intel_wvt/Dockerfile
-    image: mullenkamp/wrf-auto-runs-intel-wvt:2.0
+      dockerfile: gfortran_wrf/Dockerfile
+    image: mullenkamp/wrf-auto-runs:2.7
     shm_size: '1gb'
     volumes:
         - "./parameters.toml:/app/parameters.toml"

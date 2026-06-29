@@ -14,6 +14,7 @@ import pendulum
 import params
 import utils
 import defaults
+from create_trmask import num_wvt_regions as count_wvt_regions
 
 
 ################################################
@@ -44,6 +45,45 @@ def broadcast_field(value, n_domains, domains, old_n_domains):
     if len(value) == n_domains:
         return list(value)
     raise ValueError(f'Array has {len(value)} values, expected {old_n_domains} (full domain count) or {n_domains} (run domain count)')
+
+
+def validate_wvt_regions(wvt_config, dynamics, bl_pbl):
+    """Validate the multi-region WVT constraints (mirrors WRF check_a_mundo) so a bad
+    config fails fast, before geogrid/metgrid/real, rather than at WRF startup.
+
+    num_wvt_regions is derived from the number of [[wvt.regions]] (1 for the flat
+    single-region form). `bl_pbl` is the de-listed bl_pbl_physics value. Raises ValueError.
+    """
+    def _first(v):
+        return v[0] if isinstance(v, list) else v
+
+    n_regions = count_wvt_regions(wvt_config)
+    if n_regions > 8:
+        raise ValueError(
+            f'[wvt] defines {n_regions} regions but the build supports at most 8 '
+            '(MAX_WVT_REGIONS). Reduce the number of [[wvt.regions]].'
+        )
+    if n_regions <= 1:
+        return
+
+    tracer_opt = _first(dynamics.get('tracer_opt', 0))
+    t3src = _first(dynamics.get('tracer3dsource', 0))
+    t3sink = _first(dynamics.get('tracer3dsink', 0))
+    if tracer_opt != 4:
+        raise ValueError(
+            f'[wvt] defines {n_regions} regions but [dynamics] tracer_opt={tracer_opt} (must be 4). '
+            'Set tracer_opt=4 to enable multi-region WVT, or define a single region.'
+        )
+    if bl_pbl != 0:
+        raise ValueError(
+            f'multi-region WVT ({n_regions} regions) requires bl_pbl_physics=0 (SMS-3DTKE); '
+            f'got bl_pbl_physics={bl_pbl}. Multi-region is not wired for YSU.'
+        )
+    if t3src != 0 or t3sink != 0:
+        raise ValueError(
+            f'multi-region WVT ({n_regions} regions) requires tracer3dsource=0 and tracer3dsink=0 '
+            f'(3D source/sink is single-region only); got tracer3dsource={t3src}, tracer3dsink={t3sink}.'
+        )
 
 
 ################################################
@@ -147,6 +187,9 @@ def check_nml_params(domains):
                 'bl_pbl_physics=0 with tracer_opt>0 requires tracer_pblmix=1. '
                 'Without it, tracers will not be vertically mixed.'
             )
+
+    # WVT multi-region constraints (caught before geogrid/metgrid/real).
+    validate_wvt_regions(params.file.get('wvt', {}), dynamics, bl_pbl)
 
     return src_n_domains, domains
 
@@ -304,6 +347,20 @@ def set_nml_params(domains=None):
     if tracer_opt_val == 4:
         wrf_tc.setdefault('io_form_auxinput8', 2)
         wrf_tc.setdefault('auxinput8_inname', 'trmask_d<domain>')
+        # num_wvt_regions drives the wvtreg dimension + tracer packages in WRF. The
+        # [wvt] region list is the single source of truth; derive the count and inject
+        # it. If the user also set num_wvt_regions in [dynamics] (e.g. copied from a raw
+        # namelist), require the two to agree rather than silently overriding.
+        n_regions = count_wvt_regions(params.file.get('wvt', {}))
+        user_n = dynamics.get('num_wvt_regions')
+        if isinstance(user_n, list):
+            user_n = user_n[0]
+        if user_n is not None and int(user_n) != n_regions:
+            raise ValueError(
+                f'[dynamics] num_wvt_regions={user_n} does not match the {n_regions} region(s) '
+                'defined in [wvt]. Omit num_wvt_regions to derive it automatically, or fix the count.'
+            )
+        dynamics['num_wvt_regions'] = n_regions
 
     ## Direct WRF namelist sections from TOML
     override_sections = {

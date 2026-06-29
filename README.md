@@ -9,7 +9,7 @@ A **single-stage** workflow (one container does everything end-to-end) is suppor
 ## Prerequisites
 
 - Linux with Docker installed (your user must be in the `docker` group)
-- WPS_GEOG static geography data — download with `test_scripts/add_geog.sh`
+- WPS_GEOG static geography data — see the **WPS_GEOG path** section below for the download
 
 ## Quick Start (Unified Per-Chunk — Recommended)
 
@@ -269,19 +269,25 @@ All output files are uploaded to `[remote.output]` during the run and deleted lo
 
 | Image | Compiler | WPS | Use |
 |---|---|---|---|
-| `mullenkamp/wrf-auto-runs-intel-wvt:1.8` | Intel oneAPI | dmpar | **Default for all modes** — unified per-chunk (preprocess + WRF in one image), single-stage, and the legacy split-pipeline WRF stage |
+| `mullenkamp/wrf-auto-runs-intel-wvt:2.0` | Intel oneAPI | dmpar | **Current — multi-region WVT** (1..8 tagged source regions via `[[wvt.regions]]`; `num_wvt_regions=1` reproduces single-region bit-for-bit). All modes (unified per-chunk, single-stage). **Production-validated (2026-06-26)** against the independent legacy single-region image. Base `wrf-wps-intel-wvt-ubuntu:2.0`. |
+| `mullenkamp/wrf-auto-runs-intel-wvt:1.14` | Intel oneAPI | dmpar | Legacy single-region WVT (all modes). Base `wrf-wps-intel-wvt-ubuntu:1.5`. |
 | `mullenkamp/wrf-auto-runs-wvt:1.7` | gfortran | dmpar | Backup image. Legacy split-pipeline preprocess stage; short single-stage runs |
-| `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | Non-WVT variant |
+| `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | Non-WVT variant. Build context `gfortran_wrf/` ✦ |
+| `mullenkamp/wrf-auto-runs-intel:1.3` | Intel oneAPI | dmpar | Non-WVT variant. Build context `intel_wrf/` |
+| `mullenkamp/wrf-auto-runs-intel-wvt-sr:1.0` | Intel oneAPI | dmpar | **Single-region WVT** (frozen reference; supersedes `:1.14`). Build context `intel_wvt_sr/` ✦ |
+| `mullenkamp/wrf-auto-runs-wvt-mr:1.0` | gfortran | dmpar | **Multi-region WVT** (gfortran). Build context `gfortran_wvt_mr/` ✦ |
+| `mullenkamp/wrf-auto-runs-wvt-ref:1.2` | gfortran | serial | WRF 4.3.3 + original WVT (frozen reference). Build context `gfortran_wvt_ref/` |
+
+✦ = new scaffolding — build + validate on demand. Full variant × compiler matrix (+ build contexts + bases) is in `CLAUDE.md`.
 
 ## Project Structure
 
 ```
 wrf-auto-runs/           Python pipeline modules
 slurm_scripts/           SLURM job scripts (cluster-specific)
-test_scripts/            Helper scripts (add_geog.sh, run_wrf.sh, etc.)
 parameters_example.toml  Annotated configuration template
 docker-compose.yml       Docker run configuration (single-stage default)
-intel_wvt/               Intel WVT pipeline image build context
+intel_wvt/               Intel WVT pipeline image build context (+ parameters_example_wvt.toml — multi-region [[wvt.regions]] schema)
 gfortran_wvt/            gfortran WVT pipeline image build context
 intel_wrf/               Intel non-WVT pipeline image build context
 gfortran_wvt_ref/        gfortran reference (WRF 4.3.3) build context

@@ -17,6 +17,7 @@ import pyproj
 
 import params
 import defaults
+from create_trmask import num_wvt_regions as count_wvt_regions
 
 ############################################
 ### Parameters
@@ -260,14 +261,42 @@ def check_input_extent(input_type, min_lon, min_lat, max_lon, max_lat):
         )
 
 
-def resolve_output_variables(variables):
+def _wvt_tracer_base(name):
+    """If `name` is a WVT 3D named-member tracer (base or _NN-suffixed), return its
+    family base (lower-case); else None. e.g. 'qv_tr' -> 'qv_tr', 'qv_tr_03' -> 'qv_tr',
+    'TR_THUM_U_PHY_DT_02' -> 'tr_thum_u_phy_dt'."""
+    low = name.lower()
+    if low in defaults.WVT_TRACER_FAMILIES:
+        return low
+    head, _, tail = low.rpartition('_')
+    if tail.isdigit() and head in defaults.WVT_TRACER_FAMILIES:
+        return head
+    return None
+
+
+def resolve_output_variables(variables, n_wvt_regions=1):
     """
     Expand user variable list with required coordinate/auxiliary variables.
     Always adds 2D coordinates. Adds 3D auxiliaries if any 3D variable is present.
+
+    For multi-region WVT (n_wvt_regions > 1), any requested 3D tracer named-member
+    family (qv_tr..qg_tr, tr_thum_{u,v}_phy_dt -- region 1 is the unsuffixed base)
+    is auto-expanded to all active regions, so the user keeps a stable variable list
+    even as the [wvt] region count changes. The region-dimensioned 2D accumulators
+    (TR_RAINNC etc.) are single variables and need no expansion. The user's casing is
+    preserved on the added _0N members.
     """
     var_set = set(variables)
+
+    if n_wvt_regions > 1:
+        for v in list(var_set):
+            if v.lower() in defaults.WVT_TRACER_FAMILIES:
+                for n in range(2, n_wvt_regions + 1):
+                    var_set.add(f'{v}_{n:02d}')
+
     var_set.update(defaults.COORD_VARS_2D)
-    if var_set & defaults.VARS_3D:
+    # 3D coords are needed for standard 3D vars and for any 3D WVT tracer member.
+    if (var_set & defaults.VARS_3D) or any(_wvt_tracer_base(v) for v in var_set):
         var_set.update(defaults.COORD_VARS_3D)
     return sorted(var_set)
 
@@ -276,7 +305,12 @@ def filter_variables(files, variables):
     """
 
     """
-    resolved = resolve_output_variables(variables)
+    # Multi-region WVT: expand requested tracer families to all active regions.
+    tracer_opt = params.file.get('dynamics', {}).get('tracer_opt', 0)
+    if isinstance(tracer_opt, list):
+        tracer_opt = tracer_opt[0]
+    n_wvt = count_wvt_regions(params.file.get('wvt', {})) if tracer_opt == 4 else 1
+    resolved = resolve_output_variables(variables, n_wvt)
     vars_str = ','.join(resolved)
     for file_path in files:
         orig_path, orig_file_name = os.path.split(file_path)

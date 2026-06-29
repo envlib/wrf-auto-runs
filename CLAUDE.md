@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Hub repo = `wrf-model-eval`.** This repo is one part of the WRF/WVT project. Claude's memory is keyed to the **launch directory**, so **start Claude in the hub (`~/git/wrf-repos/wrf-model-eval`) and edit this repo from there** to keep context continuous — launching here instead gives a separate, sparse memory. Cross-repo open work + context: **`wrf-model-eval/OPEN_WORK.md`** and the hub's Claude memory.
+
 ## Project Overview
 
 Automated pipeline to run the WRF (Weather Research and Forecasting) model using ERA5 reanalysis data or WRF output as boundary/initial conditions. Runs inside a Docker container with WRF 4.7.1-ARW and WPS 4.6.0 pre-installed. All configuration is driven by a single `parameters.toml` file (gitignored; see `parameters_example.toml`).
@@ -16,15 +18,55 @@ Unified per-chunk is the standard workflow because per-chunk preprocess avoids t
 
 ## Image Matrix
 
-| Image | Compiler | WPS build | Use |
-|---|---|---|---|
-| `mullenkamp/wrf-auto-runs-intel-wvt:1.14` | Intel oneAPI | dmpar | **Default for all modes** — unified per-chunk, single-stage, preprocess-only. Built on base `wrf-wps-intel-wvt-ubuntu:1.5`. |
-| `mullenkamp/wrf-auto-runs-wvt:1.7` | gfortran | dmpar | Backup. Short single-stage runs |
-| `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | Non-WVT variant |
+Three model variants × two compilers, plus the frozen WRF-4.3.3 reference. Each pipeline image is built from
+a build-context dir here and `FROM` a `wrf-docker-builds` base. The pipeline derives WVT behaviour purely
+from `parameters.toml` (`tracer_opt`/`[wvt]`) and is image-agnostic — pick the image by variant + compiler.
+
+| Variant | Compiler | Pipeline image | Build context | Base (wrf-docker-builds) |
+|---|---|---|---|---|
+| no-WVT | gfortran | `wrf-auto-runs:2.7` | `gfortran_wrf/` ✦ | `wrf-wps-debian:1.2` |
+| no-WVT | Intel | `wrf-auto-runs-intel:1.3` | `intel_wrf/` | `wrf-wps-intel-ubuntu:1.0` |
+| single-region WVT | gfortran | `wrf-auto-runs-wvt:1.8` | `gfortran_wvt/` | `wrf-wps-wvt-debian:1.3` |
+| single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.0` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.0` ✦ |
+| **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.0` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.0` ✦ |
+| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.0`** | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.0` |
+| reference (WRF 4.3.3) | gfortran | `wrf-auto-runs-wvt-ref:1.2` | `gfortran_wvt_ref/` | `wrf-wps-wvt-ref-debian:1.0` |
+
+✦ = **new scaffolding — build + validate on demand** (gfortran multi-region is the higher-risk
+cross-compile; the MR overlay was developed/validated on Intel `ifx`). The legacy
+`wrf-auto-runs-intel-wvt:1.14` is the Intel single-region image (superseded by `…-wvt-sr`); multi-region at
+`num_wvt_regions=1` reproduces single-region bit-for-bit.
+
+**Pick by `parameters.toml`:** `tracer_opt ≠ 4` → no-WVT; one `[wvt]` region → single-region (or MR at N=1);
+multiple `[[wvt.regions]]` → multi-region. Compiler: Intel for throughput, gfortran for portability/backup.
 
 Both WPS builds inject heap-array allocation flags (`-fno-stack-arrays` for gfortran, `-heap-arrays` for Intel) — required for stable long preprocessing runs (without them metgrid segfaults in libc partway through). See `~/.claude/projects/.../memory/wps_heap_arrays_requirement.md` and `wrf-docker-builds/CLAUDE.md`.
 
 **WVT source-mask bbox** (`[wvt]` in `create_trmask.py`): two mutually-exclusive forms, each intersected with `mask_type` and evaluated per-domain — `bbox_deg = [min_lat, max_lat, min_lon, max_lon]` (degrees; `min_lon > max_lon` selects a dateline-spanning arc, OR semantics in XLONG's -180..180 frame, for NZ Lambert domains whose east edge passes 180) and `bbox_ij = [i_min, i_max, j_min, j_max]` (0-based inclusive grid indices, i=west-east / j=south-north — straight, equal-area-per-cell bands preferred for ocean-fetch sensitivity tests since a lon band tapers poleward). The old `min_lat/max_lat/min_lon/max_lon` scalar keys are removed and raise a migration error.
+
+**Multi-region WVT** (image `:2.0`+): tag N disjoint source regions in ONE run (replaces N duplicate runs).
+Define an array of `[[wvt.regions]]` tables under `[wvt]` (order = WRF region index; each region sets its own
+`mask_type`/`bbox_deg`/`bbox_ij`, inheriting a top-level `[wvt] mask_type` as default — e.g. a
+`mask_type="land"`+NZ-bbox region for the land-ET case). `create_trmask.py` derives `num_wvt_regions` (1..8)
+from the region count (validates it if the user also set it) and writes a region-dimensioned
+`TRMASK(Time, wvt_regions, sn, we)` (always — even N=1, since the WRF registry field is `i{wvtreg}j`).
+**Regions MUST be disjoint** (no cell in two masks — `create_trmask` errors on overlap): each region tags its
+cells' surface ET, so an overlapped cell double-counts and the per-region fractions stop summing to 1;
+disjoint regions sum EXACTLY to a single all-source run (the linearity the design relies on) — to combine
+areas you ADD them, never subtract. Per-region outputs: 2D accumulators (`TR_RAINNC`/`TR_RAINC`/`PWAT_TR`/…)
+carry a `wvt_regions` axis on one variable; 3D tracer fields use named members (`qv_tr`, `qv_tr_02`..`_0N`),
+which `utils.resolve_output_variables` auto-expands when filtering `output_variables`.
+`set_params.validate_wvt_regions` pre-flights the constraints (count≤8; for >1: `tracer_opt=4`,
+`bl_pbl_physics=0`, `tracer3dsource=tracer3dsink=0`). A flat single-region `[wvt]` block still works (= N=1).
+See `intel_wvt/parameters_example_wvt.toml`. **Cost:** the base atmosphere is integrated once and the
+per-region tracers ride on top (wall-clock ≈ `T_base + N·T_tracer`), so adding regions costs a fraction of
+a full run each — one N-region run ≪ N single-region runs. (Full note: `wrf-docker-builds` CLAUDE.md / the
+`wrf-wps-intel-wvt` image readme.)
+**Validated end-to-end (2026-06-26):** a full production-config 4-region Cyclone Gabrielle run (FDDA + CCI
+SST + restart chunking) reproduces the **independent** `:1.14` single-region runs (identical lat/lon masks,
+different WRF build) — zero NaN, per-region precip ratios 0.993/0.989 at r≈0.9999, exact conservation,
+clean bucket + restart — so multi-region attribution is production-ready. Bundle + analysis:
+`wrf-runs/projects/tests/wvt_multiregion_12km/analyze_bundle.py`.
 
 **Image 1.12 adds native runtime column diagnostics** (`phys/module_diag_wvt_columns.F` in the WVT branch): 8 new 2D fields written at history-write time — `PWAT`, `PWAT_TR`, `SLP`, `VIMF_U`, `VIMF_V`, `VIMF_TR_U`, `VIMF_TR_V`, `IVT`. Formulas match cfdb-ingest's offline computation exactly (validated to ~1e-7 relative agreement), so the 3D source fields (`QVAPOR`, `qv_tr`, `U`, `V`) can be dropped from `output_variables` for ~30× wrfout storage reduction. The `mslp` and `pwat` lowercase names in older configs were cfdb-ingest-derived only and no longer needed — use the uppercase native names.
 
@@ -77,7 +119,7 @@ When `[restart].enable` is not set (or `preprocess_only=true`), the pipeline run
 3. `set_nml_params()` — First pass: configure namelists for the initial domain set
 4. `run_geogrid()` — Execute `geogrid.exe`; returns domain bounding box
 5. `set_nml_params(domains_init)` — Second pass: time/date/history params, output file list
-6. `create_trmask()` — (WVT only, `tracer_opt=4`) Generate tracer mask files
+6. `create_trmask()` — (WVT only, `tracer_opt=4`) Generate the region-dimensioned tracer mask file(s); multi-region via `[[wvt.regions]]` (see Image Matrix / WVT notes above)
 7. `dl_ndown_input()` — (ndown only) Download prior wrfout files
 8. `dl_era5()` or `dl_wrf()` — Download ERA5 NetCDF or prior wrfout via rclone
 9. `run_era5_to_int()` / `run_wrf_to_int()` — Convert to WPS intermediate format
@@ -116,7 +158,7 @@ Enables the unified per-chunk mode and configures wrfrst checkpointing.
 
 **Spin-up handling (`begin_hours > 0`):** the orchestrator submits chunks over the *extended* window `(user_start_date − begin_hours) → end_date`, not just the output window. So with `interval_days=7` and `begin_hours=672` (4-week spin-up), `NUM_CHUNKS = ceil((sim_window + spin_up) / interval_days)` — e.g. a 1-year run becomes 57 chunks instead of 53. Each chunk's container computes `remaining_begin_h = max(0, original_begin_hours − elapsed_since_real_sim_start)` from its auto-detected `chunk_start` and writes that into `history_begin_h_<n>`. Chunks fully inside the spin-up window write no wrfout (just the `write_hist_at_0h_rst` chunk-boundary frame); the first chunk straddling `user_start_date` produces the first real output. Captured at module-load: `params._original_begin_hours`. Side-effect of `set_chunk_dates`: `params._chunked_mode_active=True`, which `set_params.set_nml_params` reads to skip the single-stage `start_date.subtract(history_begin)` step (chunk_start already represents the real WRF start in chunked mode, so subtracting again would double-count).
 
-**Image consolidation:** the same `wrf-auto-runs-intel-wvt:1.8+` (current: 1.12) image runs both preprocess and WRF in unified mode — the intel WPS is built dmpar (option 10 in `wrf-wps-intel-wvt/Dockerfile`) so `metgrid.exe`/`real.exe` parallelize via `mpirun -n N`.
+**Image consolidation:** the same `wrf-auto-runs-intel-wvt` image (current: **2.0** multi-region WVT / **1.14** legacy single-region) runs both preprocess and WRF in unified mode — the intel WPS is built dmpar (option 10 in `wrf-wps-intel-wvt/Dockerfile`) so `metgrid.exe`/`real.exe` parallelize via `mpirun -n N`.
 
 **Wrfrst round-trip:** every chunk iteration re-downloads wrfrst from S3 even in the in-container loop case (where the wrfrst is technically already local). This is intentional: `run_real` rmtrees `run_path`, and rather than stash/restore wrfrst across that operation, we let every iteration look like a fresh container start. Cost is one wrfrst-sized download per chunk (~500 MB–1 GB); trivial vs. the ~2.6 TB of wrffdda re-downloads this design eliminates.
 

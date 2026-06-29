@@ -83,3 +83,40 @@ class TestOutputPresets:
         for name, preset in OUTPUT_PRESETS.items():
             assert isinstance(preset, set), f"Preset {name} should be a set"
             assert all(isinstance(v, str) for v in preset), f"Preset {name} has non-string values"
+
+
+class TestWvtTracerExpansion:
+    def test_default_single_region_no_expansion(self):
+        result = set(resolve_output_variables(['qv_tr', 'TR_RAINNC']))  # n_wvt_regions defaults to 1
+        assert 'qv_tr' in result
+        assert 'qv_tr_02' not in result
+
+    def test_species_expanded_to_all_regions(self):
+        result = set(resolve_output_variables(['qv_tr'], n_wvt_regions=3))
+        assert {'qv_tr', 'qv_tr_02', 'qv_tr_03'} <= result
+        assert 'qv_tr_04' not in result
+
+    def test_all_six_species_expand(self):
+        species = ['qv_tr', 'qc_tr', 'qr_tr', 'qi_tr', 'qs_tr', 'qg_tr']
+        result = set(resolve_output_variables(species, n_wvt_regions=2))
+        for sp in species:
+            assert {sp, f'{sp}_02'} <= result
+
+    def test_tr_thum_expanded_preserving_case(self):
+        result = set(resolve_output_variables(['TR_THUM_U_PHY_DT'], n_wvt_regions=2))
+        assert {'TR_THUM_U_PHY_DT', 'TR_THUM_U_PHY_DT_02'} <= result
+
+    def test_region_dimensioned_field_not_expanded(self):
+        # TR_RAINNC carries a region axis on one variable -> no per-region members.
+        result = set(resolve_output_variables(['TR_RAINNC'], n_wvt_regions=3))
+        assert 'TR_RAINNC' in result
+        assert 'TR_RAINNC_02' not in result
+
+    def test_tracer_member_triggers_3d_coords(self):
+        result = set(resolve_output_variables(['qv_tr'], n_wvt_regions=2))
+        assert COORD_VARS_3D <= result
+
+    def test_already_suffixed_member_not_double_expanded(self):
+        result = set(resolve_output_variables(['qv_tr_02'], n_wvt_regions=3))
+        assert 'qv_tr_02' in result
+        assert 'qv_tr_03' not in result  # a suffixed member is not a base name

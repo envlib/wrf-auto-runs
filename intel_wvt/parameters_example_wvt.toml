@@ -12,10 +12,14 @@
 # Number of MPI processes for wrf.exe (via mpirun -n)
 n_cores = 8
 
-# Additional wrfout variables to retain. WVT tracer variables will appear
-# automatically when tracer_opt=4 (tr_qv, TR_RAINNC, TRQFX, etc.).
-# Comment out to retain all variables.
-# output_variables = ['T2', 'Q2', 'PSFC', 'U10', 'V10', 'RAINNC', 'RAINC', 'TR_RAINNC', 'TR_RAINC', 'TR_SNOWNC', 'TR_GRAUPELNC', 'TRQFX']
+# Additional wrfout variables to retain (ncks filter). Comment out to keep all.
+# The per-region accumulators (TR_RAINNC, TR_RAINC, TR_SNOWNC, TR_GRAUPELNC,
+# TRQFX, PWAT_TR, VIMF_TR_*) carry a wvt_regions axis on a single variable, so
+# listing the name keeps every region. The 3D tracer named-members (qv_tr..qg_tr,
+# tr_thum_{u,v}_phy_dt) are separate per region -- list the base name and it is
+# auto-expanded to all num_wvt_regions (qv_tr -> qv_tr, qv_tr_02, ...), so the
+# list stays stable when the region count changes.
+# output_variables = ['T2', 'Q2', 'PSFC', 'U10', 'V10', 'RAINNC', 'RAINC', 'TR_RAINNC', 'TR_RAINC', 'TR_SNOWNC', 'TR_GRAUPELNC', 'TRQFX', 'PWAT_TR']
 
 # =============================================================================
 # Local (non-Docker) mode -- uncomment to run outside the Docker container.
@@ -113,6 +117,11 @@ tracer_pblmix = 0
 #   tracer2dsource = 1   Enable 2D source regions (read from trmask file)
 #   tracer3dsource = 0   Enable 3D source regions (set to 1 if using TRMASK3D)
 #   tracer3dsink = 0     Enable 3D sink regions (set to 1 if using TRMASK3D2)
+#
+# num_wvt_regions (number of simultaneous tagged source regions, 1..8) is NOT set
+# here -- it is derived from the number of regions defined in [wvt] and injected
+# into the namelist automatically. If you do set it, it must match the region count.
+# Multi-region (>1) requires bl_pbl_physics=0 and tracer3dsource=tracer3dsink=0.
 # =============================================================================
 
 [dynamics]
@@ -127,31 +136,47 @@ tracer3dsink = 0
 # =============================================================================
 # WVT tracer mask configuration
 #
-# Controls automatic generation of trmask_d<domain> files after geogrid.
-# The mask defines where moisture is "tagged" as tracer moisture.
+# Controls automatic generation of trmask_d<domain> files after geogrid. The
+# mask defines where moisture is "tagged" as tracer moisture. A region is a
+# mask_type selection optionally intersected with a bbox.
 #
 # mask_type options:
 #   "land"   - All land points (from LANDMASK in geo_em). Default.
 #   "ocean"  - All ocean points (inverse of LANDMASK)
 #   "all"    - Entire domain (all grid points = source)
 #
-# Optional bbox restriction (set at most ONE of these; both are intersected
-#   with the mask_type selection and evaluated per-domain):
+# Optional bbox restriction (set at most ONE per region; intersected with the
+#   mask_type selection and evaluated per-domain):
 #   bbox_deg = [min_lat, max_lat, min_lon, max_lon]  -- geographic degrees.
 #     Bounds use XLONG's -180..180 frame; set min_lon > max_lon for an
 #     antimeridian-crossing arc, e.g. [-90, 90, 156.6, -170] keeps the eastward
 #     arc from 156.6E across 180 to -170.
 #   bbox_ij = [i_min, i_max, j_min, j_max]  -- model-grid cell indices, 0-based
-#     and INCLUSIVE, i = west-east, j = south-north. Straight, equal-area-per-
-#     cell bands that map 1:1 to the grid -- preferred for ocean-fetch
-#     sensitivity tests (no lat/lon distortion). e.g. [38, 276, 0, 323] on a
-#     277x324 grid drops the 38 westmost columns.
-#   (The old min_lat/max_lat/min_lon/max_lon scalar keys are no longer
-#    supported and raise an error -- use bbox_deg instead.)
+#     and INCLUSIVE, i = west-east, j = south-north. Straight, equal-area bands
+#     that map 1:1 to the grid -- preferred for ocean-fetch sensitivity tests.
+#   (The old min_lat/max_lat/min_lon/max_lon scalar keys raise an error.)
 #
-# relax_width: number of grid points at domain edges set to 0 (WRF relaxation
-#   zone -- tracers are not conserved there). Defaults to spec_bdy_width from
-#   [bdy_control] (or 5 if not set). Override here only if needed.
+# relax_width: grid points at domain edges set to 0 (WRF relaxation zone -- not
+#   tracer-conserving). Shared by all regions; defaults to spec_bdy_width.
+#
+# SINGLE region: set mask_type (+ optional bbox) directly under [wvt] (below).
+#
+# MULTIPLE regions (v2.0): add an array of [[wvt.regions]] tables instead -- one
+#   per region, in WRF region-index order (region 1 = the unsuffixed tracer
+#   fields, region 2 -> qv_tr_02 / TR_RAINNC[:,1,...], ...). Each region may set
+#   its own mask_type/bbox and inherits the top-level mask_type as default.
+#   num_wvt_regions is derived from the number of regions. Example (commented out
+#   below): tag SW/Tasman ocean, north-of-NZ ocean, and NZ land-ET separately.
+#
+# Regions MUST be DISJOINT -- no grid cell may be in two regions' masks
+#   (create_trmask.py errors on overlap). This is an attribution requirement, not
+#   a WRF limit: each region tags its masked cells' surface evaporation, so a cell
+#   in two regions is tagged TWICE, the per-region amounts double-count, and the
+#   fractions stop summing to 1. With disjoint regions each region IS the isolated
+#   contribution from its source area, and the set sums EXACTLY to the single
+#   all-source run. So to combine areas you ADD the per-region TR_RAINNC (you do
+#   NOT subtract one region from another); to compare overlapping/nested fetches,
+#   run them as separate single-region simulations.
 # =============================================================================
 
 [wvt]
@@ -160,6 +185,23 @@ mask_type = "ocean"
 # Optional bbox restriction -- set at most ONE of bbox_deg / bbox_ij:
 # bbox_deg = [-42.0, -38.0, 168.0, 175.0]   # [min_lat, max_lat, min_lon, max_lon]
 # bbox_ij  = [38, 276, 0, 323]              # [i_min, i_max, j_min, j_max] (0-based inclusive)
+
+# --- Multi-region form (uncomment and remove the single-region keys above) ----
+# [wvt]
+# mask_type = "ocean"          # default inherited by every region below
+#
+# [[wvt.regions]]
+# name = "west"                # region 1 (unsuffixed fields)
+# bbox_deg = [-48, -34, 162, 172]
+#
+# [[wvt.regions]]
+# name = "north"               # region 2 (qv_tr_02, TR_RAINNC[:,1,...])
+# bbox_deg = [-38, -30, 170, 180]
+#
+# [[wvt.regions]]
+# name = "nz_land_et"          # region 3: NZ land ET (override mask_type; bbox excludes other landmasses)
+# mask_type = "land"
+# bbox_deg = [-47.5, -34, 166, 179]
 
 # =============================================================================
 # FDDA (grid nudging) -- optional

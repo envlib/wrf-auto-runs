@@ -170,6 +170,18 @@ VARS_3D = {
     'TKE_PBL',
 }
 
+# WVT (multi-region) 3D named-member families -- the only per-region WVT fields
+# stored as SEPARATE variables per region (region 1 = the unsuffixed base name,
+# regions 2..N = base_02..base_0N). The 2D accumulators (TR_RAINNC etc.) instead
+# carry a wvt_regions axis on a single variable, so they need no expansion. Matched
+# case-insensitively (species are lower-case in wrfout, tr_thum upper-case). When
+# output_variables filtering is active and a base name is requested it is auto-
+# expanded to all active regions (see utils.resolve_output_variables). All are 3D.
+WVT_TRACER_FAMILIES = {
+    'qv_tr', 'qc_tr', 'qr_tr', 'qi_tr', 'qs_tr', 'qg_tr',
+    'tr_thum_u_phy_dt', 'tr_thum_v_phy_dt',
+}
+
 # Named presets: each maps to a set of WRF output variables required by a
 # specific downstream tool.  Users select presets via ``output_presets`` in
 # parameters.toml; the variables are merged with any explicit
@@ -229,16 +241,21 @@ PHYSICS_PER_DOMAIN_FIELDS = {
     'radt', 'bldt', 'cudt', 'sf_urban_physics',
 }
 
-# Per-domain fields in &dynamics that need broadcasting
+# WVT dynamics switches: per-domain (must be broadcast to all domains to prevent tracer
+# array size mismatch during nested boundary forcing -- d01 tracer array must match d02),
+# but OPTIONAL -- only emitted when tracer_opt=4 is configured, so absent from a non-WVT
+# namelist (WRF defaults tracer_opt=0). Named separately so callers/tests can tell them apart.
+WVT_DYNAMICS_PER_DOMAIN_FIELDS = {
+    'tracer_opt', 'tracer_adv_opt', 'tracer2dsource', 'tracer3dsource', 'tracer3dsink',
+}
+
+# Per-domain fields in &dynamics that need broadcasting (always-on defaults + the optional WVT switches)
 DYNAMICS_PER_DOMAIN_FIELDS = {
     'diff_opt', 'km_opt', 'diff_6th_opt', 'diff_6th_factor',
     'zdamp', 'dampcoef', 'khdif', 'kvdif',
     'non_hydrostatic', 'moist_adv_opt', 'scalar_adv_opt',
     'gwd_opt', 'epssm',
-    # WVT: must be broadcast to all domains to prevent tracer array size mismatch
-    # during nested boundary forcing (d01 tracer array size must match d02)
-    'tracer_opt', 'tracer_adv_opt', 'tracer2dsource', 'tracer3dsource', 'tracer3dsink',
-}
+} | WVT_DYNAMICS_PER_DOMAIN_FIELDS
 
 # ============================================================
 # Pipeline Key Sets

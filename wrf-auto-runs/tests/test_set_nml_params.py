@@ -6,7 +6,7 @@ import pytest
 
 import defaults
 import params
-from set_params import set_nml_params
+from set_params import set_nml_params, validate_wvt_regions
 
 
 class TestSetNmlParams:
@@ -48,11 +48,14 @@ class TestSetNmlParams:
             assert isinstance(nml_val, list), f'{field} should be a list'
             assert len(nml_val) == 3, f'{field} should have length 3'
 
-        # WRF &dynamics — all defaults, per-domain fields are length 3
-        for field in defaults.DYNAMICS_PER_DOMAIN_FIELDS:
+        # WRF &dynamics — always-on per-domain fields are length 3. The optional WVT tracer
+        # switches are only emitted when tracer_opt=4, so they are absent in this non-WVT config.
+        for field in defaults.DYNAMICS_PER_DOMAIN_FIELDS - defaults.WVT_DYNAMICS_PER_DOMAIN_FIELDS:
             nml_val = wrf['dynamics'][field]
             assert isinstance(nml_val, list), f'{field} should be a list'
             assert len(nml_val) == 3, f'{field} should have length 3'
+        for field in defaults.WVT_DYNAMICS_PER_DOMAIN_FIELDS:
+            assert field not in wrf['dynamics'], f'{field} should be absent without WVT (tracer_opt!=4)'
 
         # WRF &time_control arrays
         assert len(wrf['time_control']['history_interval']) == 3
@@ -128,13 +131,13 @@ class TestSetNmlParams:
         assert wrf['domains']['use_adaptive_time_step'] is False
 
     def test_fdda_section(self, mock_params, tmp_path):
-        """[fdda] keys pass directly to WRF &fdda."""
+        """[fdda] grid_fdda is broadcast per-domain (masked by grid_fdda>0)."""
         mock_params['fdda'] = {'grid_fdda': 1}
 
         set_nml_params()
 
         wrf = f90nml.read(tmp_path / 'namelist.input')
-        assert wrf['fdda']['grid_fdda'] == 1
+        assert wrf['fdda']['grid_fdda'] == [1, 1, 1]   # broadcast to all 3 domains
 
     def test_summary_and_zlevel_output(self, mock_params, tmp_path):
         """Enable both summary_file and z_level_file."""
@@ -300,3 +303,47 @@ class TestChunkedBeginHours:
         assert wrf['time_control']['start_year'][0]  == self.REAL_START.year
         assert wrf['time_control']['start_month'][0] == self.REAL_START.month
         assert wrf['time_control']['start_day'][0]   == self.REAL_START.day
+
+
+class TestValidateWvtRegions:
+    """Pre-run multi-region WVT validation (mirrors WRF check_a_mundo)."""
+
+    MULTI = {'regions': [{'name': 'west'}, {'name': 'north'}]}
+
+    def test_no_wvt_section_ok(self):
+        validate_wvt_regions({}, {}, bl_pbl=1)  # no regions -> nothing to enforce
+
+    def test_flat_single_region_ok_with_ysu(self):
+        # a single region imposes no multi-region constraints (YSU/3D allowed)
+        validate_wvt_regions({'mask_type': 'ocean'}, {'tracer_opt': 4, 'tracer3dsource': 1}, bl_pbl=1)
+
+    def test_multi_region_valid_config(self):
+        dyn = {'tracer_opt': 4, 'tracer3dsource': 0, 'tracer3dsink': 0}
+        validate_wvt_regions(self.MULTI, dyn, bl_pbl=0)  # should not raise
+
+    def test_too_many_regions(self):
+        wvt = {'regions': [{'name': f'r{i}'} for i in range(9)]}
+        with pytest.raises(ValueError, match='at most 8'):
+            validate_wvt_regions(wvt, {'tracer_opt': 4}, bl_pbl=0)
+
+    def test_multi_region_requires_tracer_opt_4(self):
+        with pytest.raises(ValueError, match='tracer_opt'):
+            validate_wvt_regions(self.MULTI, {'tracer_opt': 0}, bl_pbl=0)
+
+    def test_multi_region_requires_bl_pbl_0(self):
+        with pytest.raises(ValueError, match='bl_pbl_physics=0'):
+            validate_wvt_regions(self.MULTI, {'tracer_opt': 4}, bl_pbl=1)
+
+    def test_multi_region_forbids_3d_source(self):
+        dyn = {'tracer_opt': 4, 'tracer3dsource': 1}
+        with pytest.raises(ValueError, match='tracer3dsource=0'):
+            validate_wvt_regions(self.MULTI, dyn, bl_pbl=0)
+
+    def test_multi_region_forbids_3d_sink(self):
+        dyn = {'tracer_opt': 4, 'tracer3dsink': 1}
+        with pytest.raises(ValueError, match='tracer3dsink'):
+            validate_wvt_regions(self.MULTI, dyn, bl_pbl=0)
+
+    def test_per_domain_list_values_handled(self):
+        dyn = {'tracer_opt': [4, 4], 'tracer3dsource': [0, 0], 'tracer3dsink': [0, 0]}
+        validate_wvt_regions(self.MULTI, dyn, bl_pbl=0)  # de-lists to first element; should not raise
