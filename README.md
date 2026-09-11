@@ -279,7 +279,7 @@ All output files are uploaded to `[remote.output]` during the run and deleted lo
 
 | Image | Compiler | WPS | Use |
 |---|---|---|---|
-| `mullenkamp/wrf-auto-runs-intel-wvt:2.0` | Intel oneAPI | dmpar | **Current — multi-region WVT** (1..8 tagged source regions via `[[wvt.regions]]`; `num_wvt_regions=1` reproduces single-region bit-for-bit). All modes (unified per-chunk, single-stage). **Production-validated (2026-06-26)** against the independent legacy single-region image. Base `wrf-wps-intel-wvt-ubuntu:2.0`. |
+| `mullenkamp/wrf-auto-runs-intel-wvt:2.5` | Intel oneAPI | dmpar | **Current — multi-region WVT** (1..8 tagged source regions via `[[wvt.regions]]`; `num_wvt_regions=1` reproduces single-region bit-for-bit). All modes (unified per-chunk, single-stage). **Production-validated (2026-06-26)** against the independent legacy single-region image. Base `wrf-wps-intel-wvt-ubuntu:2.2`. ⚠ 2.1+ add lateral-boundary face tags (up to 12 regions); **2.5/2.2 add the nine New Tiedtke water-vapour-tag mirrors** — output from earlier images carries a defective convective tagging, see `wrf-model-eval/docs/wvt_cumulus_tagging.md`. Neither is pushed. |
 | `mullenkamp/wrf-auto-runs-intel-wvt:1.14` | Intel oneAPI | dmpar | Legacy single-region WVT (all modes). Base `wrf-wps-intel-wvt-ubuntu:1.5`. |
 | `mullenkamp/wrf-auto-runs-wvt:1.7` | gfortran | dmpar | Backup image. Legacy split-pipeline preprocess stage; short single-stage runs |
 | `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | Non-WVT variant. Build context `gfortran_wrf/` ✦ |

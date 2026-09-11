@@ -29,7 +29,7 @@ from `parameters.toml` (`tracer_opt`/`[wvt]`) and is image-agnostic — pick the
 | single-region WVT | gfortran | `wrf-auto-runs-wvt:1.8` | `gfortran_wvt/` | `wrf-wps-wvt-debian:1.3` |
 | single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.0` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.0` ✦ |
 | **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.0` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.0` ✦ |
-| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.0`** | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.0` |
+| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.5`** | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.2` |
 | reference (WRF 4.3.3) | gfortran | `wrf-auto-runs-wvt-ref:1.2` | `gfortran_wvt_ref/` | `wrf-wps-wvt-ref-debian:1.0` |
 
 ✦ = **new scaffolding — build + validate on demand** (gfortran multi-region is the higher-risk

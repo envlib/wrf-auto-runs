@@ -180,6 +180,10 @@ VARS_3D = {
 WVT_TRACER_FAMILIES = {
     'qv_tr', 'qc_tr', 'qr_tr', 'qi_tr', 'qs_tr', 'qg_tr',
     'tr_thum_u_phy_dt', 'tr_thum_v_phy_dt',
+    # Per-region cumulus vapour tendency. Paired with the base RQVCUTEN it makes the
+    # identity sum_n RTRQVCUTEN_n == RQVCUTEN checkable on real output -- the gate that
+    # catches a broken tag mirror in the convection scheme.
+    'rtrqvcuten',
 }
 
 # Named presets: each maps to a set of WRF output variables required by a
@@ -220,6 +224,18 @@ OUTPUT_PRESETS = {
         # -- Tagged precipitation, per region on a single wvt_regions axis (no expansion
         #    needed -- these are one variable each, unlike the 3D named members).
         'TR_RAINNC', 'TR_RAINC', 'I_TR_RAINNC', 'I_TR_RAINC',
+        # -- Tag mass the one-sided caps create/destroy, per region (kg m-2). The New
+        #    Tiedtke mirrors leave a structural residual that redistributes composition
+        #    BETWEEN regions while conserving the total, so it is invisible to any
+        #    conservation check (docs/wvt_cumulus_tagging.md in wrf-model-eval). These
+        #    make it a reported quantity per run rather than an assumed-small one.
+        #    The I_* counters are as non-optional as the precipitation ones above.
+        'TR_CAPCRE', 'TR_CAPDES', 'I_TR_CAPCRE', 'I_TR_CAPDES',
+        # -- Region mask and the remaining tagged accumulators. TRMASK is not optional: every
+        #    per-region field is uninterpretable without knowing which cells each region owns,
+        #    and the CS1 gate scripts open it directly. TR_SNOWNC/TR_GRAUPELNC complete the
+        #    per-region precipitation bound (TR_SNOWNC is unbucketed, so it needs no counter).
+        'TRMASK', 'TR_SNOWNC', 'TR_GRAUPELNC',
         # -- Column diagnostics computed in-model at history-write time
         #    (registry.diag_columns / module_diag_wvt_columns.F). These exist precisely
         #    so the 3D fields need not be retained; formulas match cfdb-ingest.
@@ -249,6 +265,12 @@ OUTPUT_PRESETS = {
         # largest term in the archive. Add them per-run when a specific question needs
         # condensate, not by default.
         'qv_tr', 'QVAPOR',
+        # -- Per-region cumulus vapour tendency plus its base counterpart, so that
+        #    sum_n RTRQVCUTEN_n == RQVCUTEN is checkable on archived output. This is
+        #    the identity that detects a broken tag mirror in the convection scheme;
+        #    without it the check only exists in a single-column harness.
+        #    wvt_3d is a SHORT-RUN preset, so this costs C1 nothing.
+        'RTRQVCUTEN', 'RQVCUTEN',
     },
 }
 
