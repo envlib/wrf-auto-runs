@@ -231,6 +231,15 @@ OUTPUT_PRESETS = {
         #    make it a reported quantity per run rather than an assumed-small one.
         #    The I_* counters are as non-optional as the precipitation ones above.
         'TR_CAPCRE', 'TR_CAPDES', 'I_TR_CAPCRE', 'I_TR_CAPDES',
+        # -- The MICROPHYSICS equivalents. THREE fields, not two, because WSM6's six caps are of
+        #    three kinds and summing them is meaningless: TR_MPRED moves tag mass condensate ->
+        #    vapour (total conserved), TR_MPDES discards it, TR_MPCRE invents it at the
+        #    positivity floors after sedimentation. TR_MPRED is the leading candidate for tagged
+        #    PRECIPITATION being depleted ~2x harder than tagged column water.
+        #    Like the cumulus pair, the I_* counters are non-optional: cfdb-ingest probes for
+        #    I_<var> in the FIRST file only and silently drops the bucket term if absent.
+        'TR_MPCRE', 'TR_MPDES', 'TR_MPRED',
+        'I_TR_MPCRE', 'I_TR_MPDES', 'I_TR_MPRED',
         # -- Region mask and the remaining tagged accumulators. TRMASK is not optional: every
         #    per-region field is uninterpretable without knowing which cells each region owns,
         #    and the CS1 gate scripts open it directly. TR_SNOWNC/TR_GRAUPELNC complete the
