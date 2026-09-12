@@ -118,7 +118,14 @@ DYNAMICS_DEFAULTS = {
     'khdif': 0,                  # Horizontal diffusion constant (m^2/s)
     'kvdif': 0,                  # Vertical diffusion constant (m^2/s)
     'non_hydrostatic': True,     # Non-hydrostatic mode
-    'moist_adv_opt': 1,          # Positive-definite moisture advection
+    # moist_adv_opt: 4 (WENO positive-definite), NOT WRF's default 1. The WVT tags are advected with
+    # tracer_adv_opt = 4 (hard-required by check_a_mundo), and base moisture on a DIFFERENT limiter
+    # makes sum_n tr_qX overshoot qX at every sharp cloud edge; WSM6's entry caps then discard the
+    # excess. Measured 2026-09-13 at 12 regions: 15% of tagged precipitation returned to vapour and
+    # 10% of NZ-land rain untagged with 1, against 0.2% and 1.7% with 4 (wrf-model-eval
+    # docs/wvt_wsm6_tagging.md). check_a_mundo refuses 1 with tracer_opt = 4 from image 2.4 on.
+    # Every tagged archive produced before 2026-09-13 carries the mismatch.
+    'moist_adv_opt': 4,          # WENO positive-definite moisture advection -- must match tracer_adv_opt
     'scalar_adv_opt': 1,         # Positive-definite scalar advection
     'gwd_opt': 1,                # Gravity wave drag
     'epssm': 0.5,                # Time off-centering for sound waves
@@ -221,6 +228,12 @@ OUTPUT_PRESETS = {
         #    reconstructs the accumulation as var + BUCKET_MM * I_var, so omitting a
         #    counter silently corrupts totals every time the bucket ticks.
         'RAINNC', 'RAINC', 'I_RAINNC', 'I_RAINC',
+        # -- Per-interval precipitation, windowed by prec_acc_dt (= each domain's history interval,
+        #    set_params.py). Seam-robust where the running totals are not: RAINC/RAINNC restart
+        #    from zero at every cold start, so an archive stitched from independent runs loses one
+        #    interval per seam. Totals still come from RAINC+RAINNC on a single run (the PREC_ACC
+        #    pair is corrupted on a two-way-nested d01 by d02's reset cadence -- feedback=0 here).
+        'PREC_ACC_C', 'PREC_ACC_NC',
         # -- Tagged precipitation, per region on a single wvt_regions axis (no expansion
         #    needed -- these are one variable each, unlike the 3D named members).
         'TR_RAINNC', 'TR_RAINC', 'I_TR_RAINNC', 'I_TR_RAINC',
