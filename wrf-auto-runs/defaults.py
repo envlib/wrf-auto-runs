@@ -264,6 +264,13 @@ OUTPUT_PRESETS = {
         'PWAT', 'PWAT_TR', 'VIMF_U', 'VIMF_V', 'VIMF_TR_U', 'VIMF_TR_V', 'IVT',
         # -- Storm identification / cataloguing (MSLP-based tracking, IVT above for ARs)
         'SLP',
+        # -- Sea-surface temperature: the FORCING, archived so the output can describe itself.
+        #    Added 2026-09-14. No wrfout GLOBAL ATTRIBUTE records which SST product drove a run, so
+        #    without this field two archives of different experiments are indistinguishable from
+        #    their own contents: a Stage-0 gate comparing all 167 attributes of `cs1_v50_fix8`
+        #    against `cs1_v50_era5_fix8` -- a CCI-vs-ERA5 pair that moves NZ-land precipitation by
+        #    -7% -- finds NO difference at all. 2-D, so the cost is negligible against 45 years.
+        'SST',
         # -- Static fields. HGT is 2D but is only auto-added alongside the 3D coordinate
         #    set, so a 2D-only preset must name it explicitly; LANDMASK is never
         #    auto-added and the NZ landmask derivation depends on it.
