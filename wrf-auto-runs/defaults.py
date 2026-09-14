@@ -118,15 +118,20 @@ DYNAMICS_DEFAULTS = {
     'khdif': 0,                  # Horizontal diffusion constant (m^2/s)
     'kvdif': 0,                  # Vertical diffusion constant (m^2/s)
     'non_hydrostatic': True,     # Non-hydrostatic mode
-    # moist_adv_opt: 4 (WENO positive-definite), NOT WRF's default 1. The WVT tags are advected with
-    # tracer_adv_opt = 4 (hard-required by check_a_mundo), and base moisture on a DIFFERENT limiter
-    # makes sum_n tr_qX overshoot qX at every sharp cloud edge; WSM6's entry caps then discard the
-    # excess. Measured 2026-09-13 at 12 regions: 15% of tagged precipitation returned to vapour and
-    # 10% of NZ-land rain untagged with 1, against 0.2% and 1.7% with 4 (wrf-model-eval
-    # docs/wvt_wsm6_tagging.md). check_a_mundo refuses 1 with tracer_opt = 4 from image 2.4 on.
-    # Every tagged archive produced before 2026-09-13 carries the mismatch.
-    'moist_adv_opt': 4,          # WENO positive-definite moisture advection -- must match tracer_adv_opt
-    'scalar_adv_opt': 1,         # Positive-definite scalar advection
+    # moist_adv_opt is WRF's own default (1) here, and is raised to 4 ONLY for WVT runs --
+    # see WVT_ADV_OPT below and its injection in set_params.py. Keeping 4 as a global default
+    # would silently impose WENO-5 on every NON-WVT run this package generates (otago, pmp,
+    # wrf_3k, forecasts), which is not ours to decide for them.
+    'moist_adv_opt': 1,          # WRF default; WVT runs are raised to WVT_ADV_OPT (=4)
+    # scalar_adv_opt is a NO-OP in the WVT configuration: the `scalar` 4-D array holds
+    # double-moment number/volume concentrations (qndrop, qnc, qni, ...) and WSM6
+    # (mp_physics=6) activates none of them (the only `scalar` member that could apply here,
+    # tke_adv, belongs to bl_pbl_physics==17 / k-epsilon). 1 is also WRF's default, so it is
+    # correct for non-WVT runs too.
+    # ⚠ tke_adv_opt is NOT similarly inert: solve_em.F's `TKE_advance` block runs for
+    # km_opt == 2 .OR. km_opt == 5, so SMS-3DTKE's prognostic TKE IS advected under it. It is
+    # left at WRF's default 1 as a considered choice, not an inert one.
+    'scalar_adv_opt': 1,         # WRF default (no-op at mp_physics=6, which has no scalar members)
     'gwd_opt': 1,                # Gravity wave drag
     'epssm': 0.5,                # Time off-centering for sound waves
 }
@@ -343,6 +348,27 @@ PHYSICS_PER_DOMAIN_FIELDS = {
     'radt', 'bldt', 'cudt', 'sf_urban_physics', 'prec_acc_dt',
 }
 
+# WVT ADVECTION -- the one dynamics setting the WVT method PRESCRIBES rather than suggests.
+# Insua-Costa, D. & Miguez-Macho, G. (2018), "A new moisture tagging capability in the Weather
+# Research and Forecasting model", Earth Syst. Dynam. 9, 167-185 -- the implementation vendored in
+# our WRF build -- section 2:
+#   "Moisture and tracer advection are calculated with the fifth-order weighted essentially
+#    non-oscillatory (WENO) scheme with a positive definite limiter."
+#   "It is important to use an advection numerical scheme that is positive definite, conserves mass
+#    and minimizes numerical diffusion ... Both total moisture and tagged moisture must use the same
+#    scheme."
+# Option 1 meets the first two criteria and fails the third: it is 5th order horizontally but only
+# v_sca_adv_order (WRF default 3) vertically, while WENO ignores both order switches and is 5th
+# order in each direction. Violating the "same scheme" half is not cosmetic -- measured 2026-09-13
+# at 12 regions, base moisture on 1 against tags on 4 returned 15% of tagged precipitation to
+# vapour via WSM6's entry caps and left 10% of NZ-land rain untagged, against 0.2% and 1.7% matched
+# (wrf-model-eval docs/wvt_wsm6_tagging.md). WRF's check_a_mundo refuses the mismatch from image 2.4.
+#
+# ⚠ This applies to WVT runs ONLY. A non-WVT run has no tags to keep consistent with, so the choice
+# is the user's and the defaults above leave it at WRF's. set_params.py injects this value when
+# tracer_opt == 4, and raises if the config asks for something else.
+WVT_ADV_OPT = 4
+
 # WVT dynamics switches: per-domain (must be broadcast to all domains to prevent tracer
 # array size mismatch during nested boundary forcing -- d01 tracer array must match d02),
 # but OPTIONAL -- only emitted when tracer_opt=4 is configured, so absent from a non-WVT
@@ -351,13 +377,24 @@ WVT_DYNAMICS_PER_DOMAIN_FIELDS = {
     'tracer_opt', 'tracer_adv_opt', 'tracer2dsource', 'tracer3dsource', 'tracer3dsink',
 }
 
+# Per-domain &dynamics fields with NO pipeline default, so they appear only when a config sets
+# them (WRF applies its own defaults otherwise -- h_sca_adv_order 5, v_sca_adv_order 3). They are
+# listed so that WHEN set they broadcast: applied to d01 alone, a nested run would advect the parent
+# and its nests at different orders. Kept separate from the always-on set above because callers and
+# tests distinguish "must be present" from "must broadcast if present".
+# ⚠ Do not lower h_sca_adv_order below 5 alongside moist_adv_opt = 4: WENO always needs the 5-point
+# stencil, but the moist_old halo is sized from this switch (solve_em.F:1881).
+OPTIONAL_DYNAMICS_PER_DOMAIN_FIELDS = {
+    'h_sca_adv_order', 'v_sca_adv_order',
+}
+
 # Per-domain fields in &dynamics that need broadcasting (always-on defaults + the optional WVT switches)
 DYNAMICS_PER_DOMAIN_FIELDS = {
     'diff_opt', 'km_opt', 'diff_6th_opt', 'diff_6th_factor',
     'zdamp', 'dampcoef', 'khdif', 'kvdif',
     'non_hydrostatic', 'moist_adv_opt', 'scalar_adv_opt',
     'gwd_opt', 'epssm',
-} | WVT_DYNAMICS_PER_DOMAIN_FIELDS
+} | WVT_DYNAMICS_PER_DOMAIN_FIELDS | OPTIONAL_DYNAMICS_PER_DOMAIN_FIELDS
 
 # ============================================================
 # Pipeline Key Sets

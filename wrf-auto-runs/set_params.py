@@ -219,6 +219,18 @@ def check_nml_params(domains):
     return src_n_domains, domains
 
 
+def _scalarize(value):
+    """First element of a per-domain list, or the value itself. None stays None.
+
+    Namelist fields reach here either as a scalar or as an already-broadcast per-domain list,
+    depending on whether the user wrote one value or many; every comparison against a switch
+    wants the domain-1 value.
+    """
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
 def set_nml_params(domains=None):
     """
     Build WPS and WRF namelists from scratch using defaults + TOML overrides.
@@ -341,6 +353,26 @@ def set_nml_params(domains=None):
     dynamics = dict(defaults.DYNAMICS_DEFAULTS)
     if 'dynamics' in params.file:
         dynamics.update(params.file['dynamics'])
+
+    ## WVT ONLY: moisture and tags must ride the same advection scheme, and the method names it
+    ## (defaults.WVT_ADV_OPT). Injected here rather than set as a global default so a NON-WVT run
+    ## keeps WRF's own moist_adv_opt -- it has no tags to stay consistent with, so the scheme is
+    ## the user's choice. Done BEFORE the per-domain broadcast below so both switches become
+    ## max_dom-length lists like every other dynamics field.
+    if _scalarize(dynamics.get('tracer_opt', 0)) == 4:
+        user_dyn = params.file.get('dynamics') or {}
+        for field in ('moist_adv_opt', 'tracer_adv_opt'):
+            asked = _scalarize(user_dyn.get(field))
+            if asked is not None and asked != defaults.WVT_ADV_OPT:
+                raise ValueError(
+                    f'[dynamics] {field}={asked} is incompatible with tracer_opt=4 (WVT). Moisture '
+                    f'and its tags must use the same advection scheme, and the WVT method specifies '
+                    f'{defaults.WVT_ADV_OPT} (5th-order WENO with a positive-definite limiter; '
+                    f'Insua-Costa & Miguez-Macho 2018). WRF itself refuses the mismatch at real.exe. '
+                    f'Omit {field} to have it set automatically.'
+                )
+            dynamics[field] = defaults.WVT_ADV_OPT
+
     for field in defaults.DYNAMICS_PER_DOMAIN_FIELDS:
         if field in dynamics:
             dynamics[field] = broadcast_field(dynamics[field], n_domains, domains, old_n_domains)

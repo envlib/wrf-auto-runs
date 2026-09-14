@@ -51,7 +51,9 @@ class TestSetNmlParams:
 
         # WRF &dynamics — always-on per-domain fields are length 3. The optional WVT tracer
         # switches are only emitted when tracer_opt=4, so they are absent in this non-WVT config.
-        for field in defaults.DYNAMICS_PER_DOMAIN_FIELDS - defaults.WVT_DYNAMICS_PER_DOMAIN_FIELDS:
+        always_on = (defaults.DYNAMICS_PER_DOMAIN_FIELDS - defaults.WVT_DYNAMICS_PER_DOMAIN_FIELDS
+                     - defaults.OPTIONAL_DYNAMICS_PER_DOMAIN_FIELDS)
+        for field in always_on:
             nml_val = wrf['dynamics'][field]
             assert isinstance(nml_val, list), f'{field} should be a list'
             assert len(nml_val) == 3, f'{field} should have length 3'
@@ -487,3 +489,85 @@ class TestBoundaryFacesNamelist:
         self._wvt(mock_params, ['west', 'east', 'south', 'north'])
         set_nml_params(domains=[1])
         assert f90nml.read(params.wrf_nml_path)['dynamics']['num_wvt_bdy_regions'] == 4
+
+
+class TestWvtAdvectionIsWvtOnly:
+    """`moist_adv_opt = 4` is a WVT requirement, not a house preference.
+
+    It was a global default from 2026-09-13 to 2026-09-14, which silently imposed 5th-order WENO
+    moisture advection on every NON-WVT run this package generates (otago, pmp, wrf_3k, forecasts)
+    -- a real change to their physics, away from WRF's own default of 1, that nobody asked for.
+    The tags are what require the scheme: the method's rule is that moisture and tags must use the
+    SAME one (Insua-Costa & Miguez-Macho 2018), and a run with no tags has nothing to match.
+    """
+
+    @staticmethod
+    def _wvt(mock_params, max_dom=1, **dyn_extra):
+        mock_params['domains']['max_dom'] = max_dom
+        mock_params['dynamics'] = {'tracer_opt': 4, 'tracer2dsource': 1,
+                                   'tracer3dsource': 0, 'tracer3dsink': 0, **dyn_extra}
+        mock_params['physics'] = {'bl_pbl_physics': 0}
+        mock_params['wvt'] = {'mask_type': 'ocean', 'regions': [{'name': 'a'}, {'name': 'b'}]}
+        return mock_params
+
+    def test_non_wvt_run_keeps_wrf_default(self, mock_params, tmp_path):
+        set_nml_params(domains=[1, 2, 3])
+        nml = f90nml.read(params.wrf_nml_path)
+        assert nml['dynamics']['moist_adv_opt'] == [1, 1, 1]
+        assert 'tracer_adv_opt' not in nml['dynamics']
+
+    def test_wvt_run_gets_weno_pd_on_both(self, mock_params, tmp_path):
+        self._wvt(mock_params)
+        set_nml_params(domains=[1])
+        nml = f90nml.read(params.wrf_nml_path)
+        assert nml['dynamics']['moist_adv_opt'] == defaults.WVT_ADV_OPT
+        assert nml['dynamics']['tracer_adv_opt'] == defaults.WVT_ADV_OPT
+
+    def test_wvt_injection_is_broadcast_to_every_domain(self, mock_params, tmp_path):
+        """Regression on ORDERING: the injection must run before the per-domain broadcast.
+
+        Set after it, both switches would reach the namelist as bare scalars while every other
+        dynamics field is a max_dom-length list -- and WRF would apply them to d01 only, silently
+        leaving the nests on a different advection scheme from their parent. That is the very
+        mismatch the guard exists to prevent, reintroduced one domain down.
+        """
+        self._wvt(mock_params, max_dom=3)
+        set_nml_params(domains=[1, 2, 3])
+        nml = f90nml.read(params.wrf_nml_path)
+        assert nml['dynamics']['moist_adv_opt'] == [defaults.WVT_ADV_OPT] * 3
+        assert nml['dynamics']['tracer_adv_opt'] == [defaults.WVT_ADV_OPT] * 3
+
+    def test_wvt_run_refuses_a_mismatched_request(self, mock_params, tmp_path):
+        """Fail in Python with the reason, rather than at real.exe 20 minutes later."""
+        self._wvt(mock_params, moist_adv_opt=1)
+        with pytest.raises(ValueError, match='same advection scheme'):
+            set_nml_params(domains=[1])
+
+    def test_wvt_run_accepts_an_explicit_agreeing_request(self, mock_params, tmp_path):
+        # Every existing WVT parameters.toml states tracer_adv_opt = 4 outright; that must keep working.
+        self._wvt(mock_params, moist_adv_opt=4, tracer_adv_opt=4)
+        set_nml_params(domains=[1])
+        nml = f90nml.read(params.wrf_nml_path)
+        assert nml['dynamics']['moist_adv_opt'] == defaults.WVT_ADV_OPT
+
+
+class TestAdvectionOrderBroadcast:
+    """`h_sca_adv_order`/`v_sca_adv_order` have no pipeline default, so they only appear when a
+    config sets them -- as `projects/tests/wsm6_caps_vsca5` does. When set they must reach every
+    domain: applied to d01 alone, a nested run would advect the parent and its nests at different
+    orders, which is the parent/nest form of the mismatch the WVT guard exists to prevent.
+    """
+
+    def test_set_orders_are_broadcast(self, mock_params, tmp_path):
+        mock_params['dynamics'] = {'v_sca_adv_order': 5, 'h_sca_adv_order': 5}
+        set_nml_params(domains=[1, 2, 3])
+        nml = f90nml.read(params.wrf_nml_path)
+        assert nml['dynamics']['v_sca_adv_order'] == [5, 5, 5]
+        assert nml['dynamics']['h_sca_adv_order'] == [5, 5, 5]
+
+    def test_unset_orders_stay_absent(self, mock_params, tmp_path):
+        """WRF applies its own defaults; the pipeline must not invent values it was not given."""
+        set_nml_params(domains=[1, 2, 3])
+        nml = f90nml.read(params.wrf_nml_path)
+        assert 'v_sca_adv_order' not in nml['dynamics']
+        assert 'h_sca_adv_order' not in nml['dynamics']
