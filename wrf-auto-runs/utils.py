@@ -361,20 +361,63 @@ def resolve_output_variables(variables, n_wvt_regions=1):
     return sorted(var_set)
 
 
-def filter_variables(files, variables):
-    """
+def prune_for_tracer_opt(names, tracer_opt):
+    """Drop the WVT-only variables from `names` when tracers are off.
 
+    Returns (kept, pruned), both in the input order. From WRF image 2.5 the WVT fields are
+    Registry-packaged and simply do not exist in a tracer_opt != 4 wrfout; `ncks -v` on a
+    missing name exits 1 and filter_variables runs it with check=True, so without this a
+    tracer-off run carrying a WVT output preset aborts. Prune-with-a-log-line rather than a
+    config-time refusal: configs legitimately carry an inert WVT list with tracers off (the P1
+    timing family's n00, which has no output target). Pure function so it is testable without
+    ncks or a parameters.toml.
     """
+    if tracer_opt == 4:
+        return list(names), []
+    kept, pruned = [], []
+    for v in names:
+        if v.lower() in defaults.WVT_ONLY_VARIABLES or _wvt_tracer_base(v) is not None:
+            pruned.append(v)
+        else:
+            kept.append(v)
+    return kept, pruned
+
+
+def present_in_file(names, file_path):
+    """Split `names` into (present, missing) against the variables of one netCDF file
+    (case-insensitive). Defence for whatever the prune did not anticipate: ncks must never be
+    handed a name the file lacks."""
+    with h5netcdf.File(file_path, 'r') as f:
+        have = {v.lower(): v for v in f.variables}
+    present = [have.get(v.lower(), v) for v in names if v.lower() in have]
+    missing = [v for v in names if v.lower() not in have]
+    return present, missing
+
+
+def filter_variables(files, variables):
+    """Subset every wrfout in `files` to `variables` (+ coordinates) in place with ncks."""
     # Multi-region WVT: expand requested tracer families to all active regions.
     tracer_opt = params.file.get('dynamics', {}).get('tracer_opt', 0)
     if isinstance(tracer_opt, list):
         tracer_opt = tracer_opt[0]
     n_wvt = count_wvt_regions(params.file.get('wvt', {})) if tracer_opt == 4 else 1
     resolved = resolve_output_variables(variables, n_wvt)
-    vars_str = ','.join(resolved)
+    resolved, pruned = prune_for_tracer_opt(resolved, tracer_opt)
+    if pruned:
+        print(f'filter_variables: tracer_opt={tracer_opt}, pruned {len(pruned)} WVT-only variable(s) '
+              f'that a tracer-off run does not write: {sorted(pruned)}')
+    warned = set()
     for file_path in files:
         orig_path, orig_file_name = os.path.split(file_path)
         if 'wrfout' in orig_file_name:
+            # Per FILE (d01 and d02 carry different variable sets, and iterdir order is not
+            # sorted): ncks must never be handed a name this particular file lacks.
+            present, missing = present_in_file(resolved, file_path)
+            if missing and tuple(sorted(missing)) not in warned:
+                warned.add(tuple(sorted(missing)))
+                print(f'filter_variables: WARNING {len(missing)} requested variable(s) are not in '
+                      f'{orig_file_name} and are dropped from its ncks list: {sorted(missing)}')
+            vars_str = ','.join(present)
             cmd_str = f'ncks -O -4 -L 1 -v {vars_str} {orig_file_name} wrf_temp.nc'
             cmd_list = shlex.split(cmd_str)
             p = subprocess.run(cmd_list, capture_output=True, text=True, check=True, cwd=orig_path)

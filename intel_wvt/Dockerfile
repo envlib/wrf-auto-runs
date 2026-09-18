@@ -1,4 +1,4 @@
-FROM mullenkamp/wrf-wps-intel-wvt-ubuntu:2.4
+FROM mullenkamp/wrf-wps-intel-wvt-ubuntu:2.6
 
 WORKDIR /app
 

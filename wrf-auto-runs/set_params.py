@@ -63,6 +63,38 @@ def broadcast_field(value, n_domains, domains, old_n_domains):
     raise ValueError(f'Array has {len(value)} values, expected {old_n_domains} (full domain count) or {n_domains} (run domain count)')
 
 
+def validate_tracer_opt_uniform(dynamics):
+    """tracer_opt must be one value on every domain (mirrors the check_a_mundo rule added
+    2026-09-18): every WVT state field is Registry-packaged on tracer_opt==4 PER DOMAIN, while
+    WRF's generated nest interpolation/feedback guards on the PARENT's array size only, so
+    `tracer_opt = 4, 0` would interpolate a full patch into the nest's size-1 dummy. Raises
+    ValueError; a scalar or a uniform list passes."""
+    v = dynamics.get('tracer_opt', 0)
+    if isinstance(v, list) and 4 in v and len(set(v)) > 1:
+        raise ValueError(
+            f'[dynamics] tracer_opt={v}: tracer_opt=4 (WVT) must be set on every domain or on none '
+            '(the WVT fields are packaged per domain, and each side of a nest exchange tests only its '
+            'own array). Stock tracer_opt values may still differ between domains.'
+        )
+
+
+def validate_tracer_sources_need_wvt(dynamics):
+    """tracer3dsource / tracer3dsink require tracer_opt=4 (mirrors the check_a_mundo rule added
+    2026-09-18: the 3-D masks they read are Registry-packaged on tracer_opt==4 and their solve_em
+    loops were keyed on these switches alone). tracer2dsource is deliberately NOT checked: its
+    consumers were always gated on tracer_opt==4, so tracer_opt=0 + tracer2dsource=1 is a harmless
+    no-op -- the shape of the P1 timing family's n00 configs (2026-09-19). Raises ValueError."""
+    if _first(dynamics.get('tracer_opt', 0)) == 4:
+        return
+    on = {k: _first(dynamics.get(k, 0)) for k in ('tracer3dsource', 'tracer3dsink')}
+    bad = {k: val for k, val in on.items() if val}
+    if bad:
+        raise ValueError(
+            f'[dynamics] {bad} set without tracer_opt=4: the WVT source/sink masks exist only in a '
+            'WVT run. Set tracer_opt=4 or switch the source/sink options off.'
+        )
+
+
 def validate_wvt_regions(wvt_config, dynamics, bl_pbl):
     """Validate the multi-region WVT constraints (mirrors WRF check_a_mundo) so a bad
     config fails fast, before geogrid/metgrid/real, rather than at WRF startup.
@@ -207,13 +239,15 @@ def check_nml_params(domains):
                 'bl_pbl_physics=0 requires scalar_pblmix=1. '
                 'Without it, scalars will not be vertically mixed.'
             )
-        if dynamics.get('tracer_opt', 0) > 0 and tracer_pblmix == 0:
+        if _first(dynamics.get('tracer_opt', 0)) > 0 and tracer_pblmix == 0:
             raise ValueError(
                 'bl_pbl_physics=0 with tracer_opt>0 requires tracer_pblmix=1. '
                 'Without it, tracers will not be vertically mixed.'
             )
 
     # WVT multi-region constraints (caught before geogrid/metgrid/real).
+    validate_tracer_opt_uniform(dynamics)
+    validate_tracer_sources_need_wvt(dynamics)
     validate_wvt_regions(params.file.get('wvt', {}), dynamics, bl_pbl)
 
     return src_n_domains, domains

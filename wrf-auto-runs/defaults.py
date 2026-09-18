@@ -198,6 +198,26 @@ WVT_TRACER_FAMILIES = {
     'rtrqvcuten',
 }
 
+# Every variable that exists ONLY in a WVT (tracer_opt = 4) run. From WRF image
+# wrf-wps-intel-wvt-ubuntu:2.5 on, these fields are Registry-PACKAGED: a tracer-off run
+# neither allocates nor writes them (before, they were written as zeros). `ncks -v` refuses a
+# name the file lacks and utils.filter_variables runs it with check=True, so a tracer-off run
+# whose output list carries a WVT preset would abort mid-run unless these are pruned first
+# (utils.prune_for_tracer_opt). Matched case-insensitively; the 3-D families above are
+# included by base name (their _0N members are pruned by _wvt_tracer_base). The test suite
+# asserts this set covers every WVT-looking name in OUTPUT_PRESETS, so a new preset entry
+# cannot slip past it.
+WVT_ONLY_VARIABLES = {
+    'trmask', 'trqfx',
+    'tr_rainnc', 'tr_rainc', 'tr_snownc', 'tr_graupelnc', 'tr_pratec',
+    'i_tr_rainnc', 'i_tr_rainc',
+    'tr_capcre', 'tr_capdes', 'i_tr_capcre', 'i_tr_capdes',
+    'tr_mpcre', 'tr_mpdes', 'tr_mpred', 'i_tr_mpcre', 'i_tr_mpdes', 'i_tr_mpred',
+    'pwat_tr', 'vimf_tr_u', 'vimf_tr_v',
+    'rtrqvblten', 'rtrqcblten', 'rtrqiblten',
+    'rtrqccuten', 'rtrqicuten', 'rtrqrcuten', 'rtrqscuten',
+} | WVT_TRACER_FAMILIES
+
 # Named presets: each maps to a set of WRF output variables required by a
 # specific downstream tool.  Users select presets via ``output_presets`` in
 # parameters.toml; the variables are merged with any explicit
