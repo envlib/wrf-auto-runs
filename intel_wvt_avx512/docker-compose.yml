@@ -1,0 +1,15 @@
+# AVX-512 variant of intel_wvt: identical pipeline image on the wrf-wps-intel-wvt-ubuntu-avx512
+# base (WRF built with -march=skylake-avx512; needs a Zen 4 / Genoa or other AVX-512 host).
+# See wrf-docker-builds/debian/wrf-wps-intel-wvt-avx512/readme.md.
+version: '3.3'
+
+services:
+  wrf-runs:
+    build:
+      context: ../
+      dockerfile: intel_wvt_avx512/Dockerfile
+    image: mullenkamp/wrf-auto-runs-intel-wvt-avx512:1.0
+    shm_size: '1gb'
+    volumes:
+        - "./parameters.toml:/app/parameters.toml"
+        - ~/WPS_GEOG:/WPS_GEOG
