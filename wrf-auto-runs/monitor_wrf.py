@@ -32,6 +32,41 @@ from upload_namelists import upload_wrfrst, cleanup_prior_wrfrst, parse_wrfrst_t
 ### Functions
 
 
+def deliver_output_files(files, run_path, rename_dict, name, out_path, final=False):
+    """
+    Filter (ncks, in place) and rename completed output files, then hand them on: to the S3 remote
+    (``ul_output_files`` -- which also runs the output hook per file and deletes on success) when
+    ``[remote.output]`` is configured; else to the output hook alone (``hook_output_files`` -- the hook
+    is the only consumer, and a file is deleted only after its hook succeeded, so a failed one stays
+    for a later reconcile); else left in ``run_path`` as before.
+    """
+    if not files:
+        return
+    if out_path is None and params.output_hook is None:
+        return
+    if params.output_variables:
+        print('- wrfout variables will be filtered based on the output_variables.')
+        utils.filter_variables(files, params.output_variables)
+    files = utils.rename_files(files, rename_dict)
+    if out_path is not None:
+        utils.ul_output_files(files, run_path, name, out_path, params.config_path)
+    else:
+        utils.hook_output_files(files, retry_failed=final)  # a file whose hook failed is retried once, post-run
+
+
+def post_run_files(run_path, effective_end):
+    """
+    The output files the post-run upload takes: everything, minus the newest wrfout per (type, domain)
+    when the run ends exactly at midnight -- that single-frame file is a "deceptive partial day" (same
+    name pattern as a new day file, one rollover frame) that the next chunk / next week's job rewrites,
+    and may write first. ``params.upload_end_frame`` takes it anyway: a single-stage forecast's last
+    lead lives in it and nothing will ever rewrite it. A function so the wiring is testable without wrf.exe.
+    """
+    files = utils.query_out_files(run_path, include_xtrm=True)
+    min_files = utils.end_frame_min_files(effective_end, params.upload_end_frame)
+    return utils.select_files_to_ul(files, min_files)
+
+
 def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
     """
 
@@ -94,12 +129,7 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
         # and deleting it would yank the file out from under WRF mid-write.
         files = utils.select_files_to_ul(files, 1, wrfxtrm_skip_newest=True)
 
-        if files and out_path is not None:
-            if params.output_variables:
-                print('- wrfout variables will be filtered based on the output_variables.')
-                utils.filter_variables(files, params.output_variables)
-            files = utils.rename_files(files, rename_dict)
-            utils.ul_output_files(files, run_path, name, out_path, params.config_path)
+        deliver_output_files(files, run_path, rename_dict, name, out_path)
 
         # wrfrst polling — upload all but the newest per domain (newest may be in-progress).
         # Mirrors the select_files_to_ul(min_files=1) pattern used for wrfout.
@@ -116,28 +146,8 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
 
     if 'SUCCESS COMPLETE WRF' in results_str:
         # Glob mode — see comment in the poll loop above.
-        files = utils.query_out_files(run_path, include_xtrm=True)
-
-        # Skip the chunk_end single-frame wrfout when the chunk's actual end falls exactly at
-        # midnight (00:00:00). Such a file is a "deceptive partial day" — same filename pattern
-        # as a new day file but contains only the rollover frame. Either (a) the next chunk
-        # clobbers it with a full 8-frame version on restart, or (b) it's the final chunk and
-        # the rollover frame is also captured in wrfrst. When the chunk end is mid-day (e.g.
-        # end_date=2023-02-15 03:00:00), the final wrfout file contains multiple frames of
-        # legitimate end-of-simulation data, so upload it.
-        effective_end = chunk_end if chunk_end is not None else end_date
-        skip_chunk_end_partial = (
-            effective_end.hour == 0 and effective_end.minute == 0 and effective_end.second == 0
-        )
-        min_files = 1 if skip_chunk_end_partial else 0
-        files = utils.select_files_to_ul(files, min_files)
-
-        if files and out_path is not None:
-            if params.output_variables:
-                print('- wrfout variables will be filtered based on the output_variables.')
-                utils.filter_variables(files, params.output_variables)
-            files = utils.rename_files(files, rename_dict)
-            utils.ul_output_files(files, run_path, name, out_path, params.config_path)
+        files = post_run_files(run_path, chunk_end if chunk_end is not None else end_date)
+        deliver_output_files(files, run_path, rename_dict, name, out_path, final=True)
 
         # Final wrfrst upload — wrf has exited cleanly so all wrfrst files are complete.
         # min_mtime still gates out the pre-existing restart-seed wrfrst.

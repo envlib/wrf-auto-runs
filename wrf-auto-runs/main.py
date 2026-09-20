@@ -287,7 +287,17 @@ else:
         print('-- ndown has been selected and the prior wrfout files will be downloaded...')
         dl_ndown_input(domains_init[0], start_date, end_date)
 
-    if params.is_wrf_input:
+    if params.input_kind == 'intermediate':
+        # Pre-staged WPS intermediate files (an external tool wrote <prefix>:<date> into data_path);
+        # nothing to download or convert, and the staging tool owns the extent check.
+        staged = sorted(params.data_path.glob(f'{params.input_prefix}:*'))
+        if not staged:
+            raise FileNotFoundError(
+                f'[input].kind = "intermediate" but no {params.input_prefix}:* files are in {params.data_path}'
+            )
+        print(f'-- Using {len(staged)} pre-staged {params.input_prefix}:* intermediate files '
+              f'({staged[0].name} .. {staged[-1].name})')
+    elif params.is_wrf_input:
         print('-- Downloading WRF data...')
         dl_wrf(start_date, end_date)
 

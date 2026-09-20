@@ -321,7 +321,9 @@ def set_nml_params(domains=None):
     wps_ungrib = dict(defaults.WPS_UNGRIB_DEFAULTS)
 
     wps_metgrid = dict(defaults.WPS_METGRID_DEFAULTS)
-    if params.is_wrf_input:
+    if params.input_kind == 'intermediate':
+        wps_metgrid['fg_name'] = str(data_path.joinpath(params.input_prefix))
+    elif params.is_wrf_input:
         wps_metgrid['fg_name'] = str(data_path.joinpath('WRF'))
     else:
         fg_names = [str(data_path.joinpath('ERA5'))]

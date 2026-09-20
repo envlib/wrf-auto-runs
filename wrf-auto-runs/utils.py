@@ -5,8 +5,10 @@ Created on Tue Sep 23 15:03:38 2025
 
 @author: mike
 """
+import fnmatch
 import os
 import shlex
+import signal
 import subprocess
 import pathlib
 
@@ -14,6 +16,7 @@ import h5netcdf
 import numpy as np
 import pendulum
 import pyproj
+import sentry_sdk
 
 import params
 import defaults
@@ -426,6 +429,117 @@ def filter_variables(files, variables):
     return True
 
 
+def end_frame_min_files(effective_end, upload_end_frame: bool) -> int:
+    """
+    How many newest files per (type, domain) the post-run upload skips. A run that ends exactly at
+    midnight leaves a single-frame wrfout named like a new day; the hindcast pattern skips it
+    (``1``) because the next chunk / next week's job rewrites it. ``upload_end_frame`` uploads it
+    anyway (``0``) -- a single-stage forecast's last lead lives in that file.
+    """
+    at_midnight = effective_end.hour == 0 and effective_end.minute == 0 and effective_end.second == 0
+    return 1 if (at_midnight and not upload_end_frame) else 0
+
+
+def run_output_hook(hook, file_path):
+    """
+    Run ``hook['command']`` (with ``{path}`` substituted, shell-quoted) for one uploaded output file.
+    Never raises: the WRF run must not die because a downstream consumer hiccupped -- every exception,
+    including a bad command string or undecodable output, is reported and swallowed. A hook that overruns
+    ``timeout_seconds`` gets SIGTERM, then ``grace_seconds`` to unwind (release remote locks, close
+    files), then SIGKILL; the hook runs in its own session so the signals reach its whole process group
+    and a grandchild holding the pipes cannot stall the poll loop.
+
+    Returns True when the hook exited 0, else False (after printing the tail of its output and, with
+    Sentry configured, sending a warning). The tail of the hook's stderr is printed on success too, so
+    the pipeline log records what each hook did.
+    """
+    if not fnmatch.fnmatch(os.path.basename(file_path), hook['match']):
+        return True
+    start = pendulum.now('UTC')
+    outcome, err = None, ''
+    try:
+        cmd_list = shlex.split(hook['command'].format(path=shlex.quote(file_path)))
+        proc = subprocess.Popen(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                errors='replace', start_new_session=True)
+        try:
+            _, err = proc.communicate(timeout=hook['timeout_seconds'])
+        except subprocess.TimeoutExpired:
+            _signal_group(proc, signal.SIGTERM)
+            try:
+                _, err = proc.communicate(timeout=hook['grace_seconds'])
+                outcome = f'timed out after {hook["timeout_seconds"]} s (exited {proc.returncode} on SIGTERM)'
+            except subprocess.TimeoutExpired:
+                _signal_group(proc, signal.SIGKILL)
+                try:
+                    _, err = proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    err = ''
+                outcome = f'timed out after {hook["timeout_seconds"]} s and ignored SIGTERM; killed'
+        if outcome is None and proc.returncode != 0:
+            outcome = f'exited {proc.returncode}'
+    except Exception as e:  # noqa: BLE001 -- the contract is "never raises"
+        outcome = f'could not run ({type(e).__name__}: {e})'
+    mins = round((pendulum.now('UTC') - start).total_minutes(), 1)
+    tail = '\n'.join((err or '').strip().splitlines()[-15:])
+    if outcome is None:
+        print(f'-- output hook ok for {os.path.basename(file_path)} in {mins} mins')
+        if tail:
+            print(f'   hook stderr:\n{tail}')
+        return True
+    print(f'-- output hook FAILED for {os.path.basename(file_path)}: {outcome} ({mins} mins)')
+    if tail:
+        print(f'   hook stderr:\n{tail}')
+    if params.is_sentry:
+        sentry_sdk.capture_message(
+            f'output hook {outcome} for {os.path.basename(file_path)}: {tail[-500:]}', level='warning'
+        )
+    return False
+
+
+def _signal_group(proc, sig):
+    """Signal the hook's whole process group (it was started with start_new_session=True)."""
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+# Files whose hook failed during the poll loop. They stay in run_path and would be re-selected on
+# every 60 s poll; retrying each one for up to timeout+grace per poll for the rest of a 144 h run is
+# not useful (review ifs-forecast-cycle-code-2). They get exactly one more attempt: the post-run pass.
+_hook_failed = set()
+
+
+def hook_output_files(files, retry_failed=False):
+    """
+    Local-only delivery: the ``[hooks].on_output_file`` command is the sole consumer of each completed
+    output file. A file is deleted after its hook succeeded (``[hooks].delete_on_success``, default
+    true) and KEPT when the hook failed, so whatever runs after WRF can reconcile from ``run_path``.
+    A failed file is not retried on later polls unless ``retry_failed`` (the post-run pass sets it).
+    Returns the files that stayed behind.
+    """
+    hook = params.output_hook
+    kept = []
+    for file in files:
+        if not os.path.exists(file):
+            continue
+        if not fnmatch.fnmatch(os.path.basename(file), hook['match']):
+            kept.append(file)  # not the hook's to consume (e.g. wrfxtrm while only wrfout is archived)
+            continue
+        if file in _hook_failed and not retry_failed:
+            kept.append(file)
+            continue
+        ok = run_output_hook(hook, file)
+        if ok and hook['delete_on_success']:
+            os.remove(file)
+            _hook_failed.discard(file)
+        else:
+            kept.append(file)
+            if not ok:
+                _hook_failed.add(file)
+    return kept
+
+
 def ul_output_files(files, run_path, name, out_path, config_path):
     """
 
@@ -446,6 +560,10 @@ def ul_output_files(files, run_path, name, out_path, config_path):
 
     if p.returncode == 0:
         for file in files:
+            # The hook sees the file after its upload succeeded and before it is deleted, under
+            # the archived (colon-free, renamed) name rclone just used.
+            if params.output_hook is not None and os.path.exists(file):
+                run_output_hook(params.output_hook, file)
             if os.path.exists(file):
                 os.remove(file)
         print(f'-- Upload successful in {mins} mins')

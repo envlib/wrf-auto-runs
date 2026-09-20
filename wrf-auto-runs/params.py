@@ -69,6 +69,9 @@ if 'preprocess_only' in os.environ:
 if 'cleanup_inputs' in os.environ:
     file['cleanup_inputs'] = os.environ['cleanup_inputs'].lower() in ('true', '1', 'yes')
 
+if 'upload_end_frame' in os.environ:
+    file['upload_end_frame'] = os.environ['upload_end_frame'].lower() in ('true', '1', 'yes')
+
 if 'restart_enable' in os.environ:
     file.setdefault('restart', {})['enable'] = os.environ['restart_enable'].lower() in ('true', '1', 'yes')
 
@@ -102,6 +105,44 @@ is_wrf_input = 'remote' in file and 'wrf' in file.get('remote', {})
 
 preprocess_only = file.get('preprocess_only', False)
 cleanup_inputs = file.get('cleanup_inputs', True)
+# upload_end_frame: also upload the single-frame wrfout WRF writes at a run that ends exactly at
+# midnight. Off by default -- the weekly hindcast pattern relies on skipping it (the next week's
+# job rewrites that file, and may run first). A single-stage forecast whose last lead is that
+# frame turns it on (monitor_wrf post-loop selection).
+upload_end_frame = bool(file.get('upload_end_frame', False))
+
+
+def _resolve_input_kind(cfg: dict) -> tuple:
+    """
+    ``(kind, prefix)`` -- how the boundary conditions arrive. ``'era5'`` (default) and ``'wrf'``
+    (implied by ``[remote.wrf]``) download and convert; ``'intermediate'`` means the WPS intermediate
+    files are already in ``data_path`` under ``[input].prefix`` (e.g. ``IFS:2026-09-19_00``), staged
+    by an external tool, so the pipeline skips download and conversion and only points metgrid at them.
+    """
+    section = cfg.get('input', {})
+    kind = section.get('kind', 'wrf' if 'wrf' in cfg.get('remote', {}) else 'era5')
+    if kind not in ('era5', 'wrf', 'intermediate'):
+        raise ValueError(f"[input].kind must be 'era5', 'wrf' or 'intermediate', got {kind!r}")
+    if kind == 'wrf' and 'wrf' not in cfg.get('remote', {}):
+        raise ValueError("[input].kind = 'wrf' requires a [remote.wrf] section")
+    if kind != 'wrf' and 'wrf' in cfg.get('remote', {}):
+        raise ValueError(f"[remote.wrf] is present but [input].kind = {kind!r}; remove one of them")
+    prefix = None
+    if kind == 'intermediate':
+        prefix = section.get('prefix')
+        if not prefix or not isinstance(prefix, str) or ':' in prefix or '/' in prefix:
+            raise ValueError("[input].kind = 'intermediate' requires [input].prefix, a bare file prefix such as 'IFS'")
+        if cfg.get('sst', {}).get('source', 'era5') != 'era5':
+            raise ValueError("[input].kind = 'intermediate' takes SST from the staged files; [sst].source must be omitted")
+        if bool(cfg.get('restart', {}).get('enable', False)):
+            raise ValueError(
+                "[input].kind = 'intermediate' is single-stage only: the chunked pipeline deletes the staged "
+                "files after its first chunk"
+            )
+    return kind, prefix
+
+
+input_kind, input_prefix = _resolve_input_kind(file)
 n_cores_preprocess = int(file.get('n_cores_preprocess', 4))
 # metgrid.exe is I/O-bound and scales poorly; high MPI rank counts amplify an intermittent
 # SIGSEGV (over-decomposition / ASLR-sensitive out-of-bounds — "fails then passes on rerun").
@@ -150,6 +191,30 @@ def set_chunk_dates(chunk_start, chunk_end, remaining_begin_hours):
     # Clear duration_hours if set, so end_date takes precedence in set_nml_params.
     file['time_control'].pop('duration_hours', None)
     _chunked_mode_active = True
+
+# [hooks] on_output_file: a command monitor_wrf runs for each completed output file ('{path}' = the
+# local, filtered, renamed file). With [remote.output] it runs after the S3 upload succeeded and
+# before the local delete; without [remote.output] it is the ONLY consumer: the file is deleted after
+# the hook succeeds (delete_on_success) and kept when it fails. Non-fatal either way: a failure is
+# printed (and sent to Sentry as a warning) and the run continues.
+def _parse_hooks(section: dict):
+    if not section.get('on_output_file'):
+        return None
+    hook = {
+        'command': str(section['on_output_file']),
+        'match': str(section.get('match', '*')),
+        'timeout_seconds': int(section.get('timeout_seconds', 900)),
+        'grace_seconds': int(section.get('grace_seconds', 60)),
+        'delete_on_success': bool(section.get('delete_on_success', True)),
+    }
+    if '{path}' not in hook['command']:
+        raise ValueError("[hooks].on_output_file must contain the '{path}' placeholder")
+    if hook['timeout_seconds'] <= 0 or hook['grace_seconds'] < 0:
+        raise ValueError('[hooks].timeout_seconds must be positive and grace_seconds non-negative')
+    return hook
+
+
+output_hook = _parse_hooks(file.get('hooks', {}))
 
 sst_source = file.get('sst', {}).get('source', 'era5')
 if sst_source not in ('era5', 'cci'):

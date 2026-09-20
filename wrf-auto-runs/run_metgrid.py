@@ -46,6 +46,9 @@ def run_metgrid(del_old=True):
                 path.unlink()
             for path in params.data_path.glob('SST:*'):
                 path.unlink()
+            if params.input_prefix:
+                for path in params.data_path.glob(f'{params.input_prefix}:*'):
+                    path.unlink()
         return True
     else:
         if params.is_sentry:
