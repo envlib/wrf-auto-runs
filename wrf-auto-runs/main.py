@@ -44,16 +44,18 @@ run_uuid = (
 
 if params.is_sentry:
     sentry = params.file['sentry']
+    # The DSN is a credential: SENTRY_DSN in the environment overrides (and lets the file carry only tags).
+    dsn = os.environ.get('SENTRY_DSN') or sentry.get('dsn', '')
 
-    if sentry['dsn'] != '':
+    if dsn != '':
         sentry_sdk.init(
-            dsn=sentry['dsn'],
+            dsn=dsn,
             # Add data like request headers and IP for users,
             # see https://docs.sentry.io/platforms/python/data-management/data-collected/ for more info
             send_default_pii=True,
         )
 
-    if sentry['tags']:
+    if sentry.get('tags'):
         sentry_sdk.set_tags(sentry['tags'])
 
     sentry_sdk.set_tags({'run_uuid': run_uuid})

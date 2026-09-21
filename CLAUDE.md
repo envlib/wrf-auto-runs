@@ -30,6 +30,7 @@ from `parameters.toml` (`tracer_opt`/`[wvt]`) and is image-agnostic — pick the
 | single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.0` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.0` ✦ |
 | **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.0` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.0` ✦ |
 | **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.11`** (2.11 = pipeline-only over base 2.6: intermediate input, output hook, `upload_end_frame`) | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.6` |
+| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.3` (same pipeline as 2.11; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.2` |
 | reference (WRF 4.3.3) | gfortran | `wrf-auto-runs-wvt-ref:1.2` | `gfortran_wvt_ref/` | `wrf-wps-wvt-ref-debian:1.0` |
 
 ✦ = **new scaffolding — build + validate on demand** (gfortran multi-region is the higher-risk
@@ -220,7 +221,7 @@ Under `<remote.output.path>/`:
 
 All Python modules live under `wrf-auto-runs/`.
 
-- **`params.py`** — Central config loader. Reads `parameters.toml`, detects Docker vs local mode (`[no_docker]` section), supports env var overrides (`start_date`, `end_date`, `domains`, `n_cores`, `n_cores_preprocess`, `duration_hours`, `preprocess_only`, `cleanup_inputs`, `run_uuid`, `restart_enable`, `restart_interval_days`, `restart_stop_after_upload`). All other scripts import `params` for paths and settings.
+- **`params.py`** — Central config loader. Reads `parameters.toml`, detects Docker vs local mode (`[no_docker]` section), supports env var overrides (`start_date`, `end_date`, `domains`, `n_cores`, `n_cores_preprocess`, `n_cores_metgrid`, `duration_hours`, `preprocess_only`, `cleanup_inputs`, `upload_end_frame`, `run_uuid`, `restart_enable`, `restart_interval_days`, `restart_stop_after_upload`; `SENTRY_DSN` is read in `main.py`). All other scripts import `params` for paths and settings.
 - **`defaults.py`** — Default namelist values for WPS and WRF. Defines field classification sets (`GEOGRID_ARRAY_FIELDS`, `DOMAINS_PER_DOMAIN_FIELDS`, etc.) and pipeline key sets (`DOMAINS_PIPELINE_KEYS`, `TIME_CONTROL_PIPELINE_KEYS`) that distinguish pipeline-consumed keys from WRF passthrough keys.
 - **`set_params.py`** — Namelist management. Reads/writes Fortran namelists (`namelist.wps`, `namelist.input`) using `f90nml`. Handles domain subsetting/renumbering, time parameter injection, output stream configuration, and computes `time_step = dx * 0.001 * 6`. Uses `apply_overrides()` to merge TOML sections into WRF namelist sections. Also exposes `apply_restart_namelist(restart_time, restart_interval_minutes, end_date_override=None)` — in-place edit of `namelist.input` for restart/chunk-aware runs.
 - **`upload_namelists.py`** — Owns the unified per-chunk `inputs/<run_uuid>/` S3 prefix lifecycle: `upload_chunk_namelists` (per-chunk namelist archive), `detect_remote_restart_state` (chunk position from S3 wrfrst metadata), `download_wrfrst_to_run_path` (pull prior chunk's wrfrst). Also owns the wrfrst lifecycle helpers used by `monitor_wrf`: `upload_wrfrst`, `cleanup_prior_wrfrst`, `parse_wrfrst_timestamp`.

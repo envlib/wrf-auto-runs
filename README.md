@@ -165,6 +165,8 @@ Optional downscaling from a prior WRF run. The `[ndown.input]` sub-section speci
 
 ### `[sentry]`
 
+`dsn` may be left out of the file and supplied as the `SENTRY_DSN` environment variable instead (a credential-free config); `tags` are attached to every event.
+
 Optional Sentry error tracking. Provide a DSN and optional tags.
 
 ### `[no_docker]`
@@ -288,7 +290,7 @@ All output files are uploaded to `[remote.output]` during the run and deleted lo
 | `mullenkamp/wrf-auto-runs:2.7` | gfortran | dmpar | Non-WVT variant. Build context `gfortran_wrf/` ✦ |
 | `mullenkamp/wrf-auto-runs-intel:1.3` | Intel oneAPI | dmpar | Non-WVT variant. Build context `intel_wrf/` |
 | `mullenkamp/wrf-auto-runs-intel-wvt-sr:1.0` | Intel oneAPI | dmpar | **Single-region WVT** (frozen reference; supersedes `:1.14`). Build context `intel_wvt_sr/` ✦ |
-| `mullenkamp/wrf-auto-runs-intel-wvt-avx512:1.2` | Intel oneAPI | dmpar | **Multi-region WVT, AVX-512 build** — same pipeline and same WRF source as `intel-wvt:2.10`, WRF compiled with `-march=skylake-avx512` (−4% at 0 regions, −6% at 12 on the harness; output byte-identical to `intel-wvt` there). Needs an AVX-512 host (all current Slurm clusters are Zen 4; not Milan / older Intel). Base `wrf-wps-intel-wvt-ubuntu-avx512:1.2`. Build context `intel_wvt_avx512/`. Pushed 2026-09-19 (the Hetzner P1 timing family ran on it). |
+| `mullenkamp/wrf-auto-runs-intel-wvt-avx512:1.3` | Intel oneAPI | dmpar | **Multi-region WVT, AVX-512 build** (1.3 = the 2.11 pipeline — intermediate input, output hook, `upload_end_frame` — on the AVX-512 WRF; the base of the forecast runner `wrf-forecasts-runner`) — same pipeline and same WRF source as `intel-wvt:2.11`, WRF compiled with `-march=skylake-avx512` (−4% at 0 regions, −6% at 12 on the harness; output byte-identical to `intel-wvt` there). Needs an AVX-512 host (all current Slurm clusters are Zen 4; not Milan / older Intel). Base `wrf-wps-intel-wvt-ubuntu-avx512:1.2`. Build context `intel_wvt_avx512/`. Pushed 2026-09-19 (the Hetzner P1 timing family ran on it). |
 | `mullenkamp/wrf-auto-runs-wvt-mr:1.0` | gfortran | dmpar | **Multi-region WVT** (gfortran). Build context `gfortran_wvt_mr/` ✦ |
 | `mullenkamp/wrf-auto-runs-wvt-ref:1.2` | gfortran | serial | WRF 4.3.3 + original WVT (frozen reference). Build context `gfortran_wvt_ref/` |
 

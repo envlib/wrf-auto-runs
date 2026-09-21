@@ -291,7 +291,7 @@ feedback = 0                            # One-way (0) or two-way (1) nesting
 # =============================================================================
 
 # [sentry]
-# dsn = ""                                 # Sentry DSN (Data Source Name) URL
+# dsn = ""                                 # Sentry DSN (Data Source Name) URL; the SENTRY_DSN env var overrides it (keeps the file credential-free)
 # tags = {task = 'wrf run'}                # Tags attached to Sentry events
 
 # =============================================================================
