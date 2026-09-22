@@ -30,7 +30,7 @@ from `parameters.toml` (`tracer_opt`/`[wvt]`) and is image-agnostic — pick the
 | single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.0` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.0` ✦ |
 | **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.0` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.0` ✦ |
 | **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.11`** (2.11 = pipeline-only over base 2.6: intermediate input, output hook, `upload_end_frame`) | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.6` |
-| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.3` (same pipeline as 2.11; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.2` |
+| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.4` (the 2.11 pipeline + the `SENTRY_DSN` env override; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.2` |
 | reference (WRF 4.3.3) | gfortran | `wrf-auto-runs-wvt-ref:1.2` | `gfortran_wvt_ref/` | `wrf-wps-wvt-ref-debian:1.0` |
 
 ✦ = **new scaffolding — build + validate on demand** (gfortran multi-region is the higher-risk
