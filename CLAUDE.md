@@ -29,14 +29,22 @@ from `parameters.toml` (`tracer_opt`/`[wvt]`) and is image-agnostic — pick the
 | single-region WVT | gfortran | `wrf-auto-runs-wvt:1.8` | `gfortran_wvt/` | `wrf-wps-wvt-debian:1.3` |
 | single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.0` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.0` ✦ |
 | **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.0` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.0` ✦ |
-| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.11`** (2.11 = pipeline-only over base 2.6: intermediate input, output hook, `upload_end_frame`) | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.6` |
-| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.4` (the 2.11 pipeline + the `SENTRY_DSN` env override; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.2` |
+| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.12`** (2.12 = 2.11 + nested-domain SST updates; 2.11 = pipeline-only over base 2.6: intermediate input, output hook, `upload_end_frame`) | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.6` |
+| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.5` (the 2.12 pipeline: + the `SENTRY_DSN` env override and nested-domain SST updates; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.2` |
 | reference (WRF 4.3.3) | gfortran | `wrf-auto-runs-wvt-ref:1.2` | `gfortran_wvt_ref/` | `wrf-wps-wvt-ref-debian:1.0` |
 
 ✦ = **new scaffolding — build + validate on demand** (gfortran multi-region is the higher-risk
 cross-compile; the MR overlay was developed/validated on Intel `ifx`). The legacy
 `wrf-auto-runs-intel-wvt:1.14` is the Intel single-region image (superseded by `…-wvt-sr`); multi-region at
 `num_wvt_regions=1` reproduces single-region bit-for-bit.
+
+⚠️ **Nested-domain SST, before 2026-09-24 (every image up to `intel-wvt:2.11` / `avx512:1.4`, all families):**
+`auxinput4_interval` was written as a scalar, which a Fortran namelist applies to domain 1 only; WRF's default for
+the other domains is 0 = never (`tools/gen_streams.c`). So **d02 and deeper never updated SST after
+initialisation** (`sst_update = 1` notwithstanding); d01 and single-domain runs were fine. Seen in
+`sst/v02_33_levels_wvt_nudging_sst`: d01 SST changes by up to 5.3 K over 24 days, d02 by 0.000 K. Fixed in
+`set_params.py` (broadcast per domain; `test_set_nml_params.py`); other image families pick it up when rebuilt.
+Which past results depend on it: `wrf-model-eval/OPEN_WORK.md`.
 
 **Pick by `parameters.toml`:** `tracer_opt ≠ 4` → no-WVT; one `[wvt]` region → single-region (or MR at N=1);
 multiple `[[wvt.regions]]` → multi-region. Compiler: Intel for throughput, gfortran for portability/backup.

@@ -63,6 +63,8 @@ class TestSetNmlParams:
         # WRF &time_control arrays
         assert len(wrf['time_control']['history_interval']) == 3
         assert len(wrf['time_control']['frames_per_outfile']) == 3
+        # SST updates for EVERY domain: a scalar reached WRF as domain 1 only and the nests never updated SST
+        assert wrf['time_control']['auxinput4_interval'] == [360, 360, 360]
 
     def test_domain_subset(self, mock_params, tmp_path):
         """Run domains=[1,2] from 3 defined."""
@@ -78,11 +80,19 @@ class TestSetNmlParams:
         # Per-domain arrays all have length 2
         assert len(wrf['time_control']['history_interval']) == 2
         assert len(wrf['domains']['e_vert']) == 2
+        assert wrf['time_control']['auxinput4_interval'] == [360, 360]
         assert len(wrf['physics']['mp_physics']) == 2
         assert len(wrf['dynamics']['non_hydrostatic']) == 2
 
         # 2 days x 2 domains = 4 output files
         assert len(output_files) == 4
+
+    def test_auxinput4_interval_override_is_per_domain(self, mock_params, tmp_path):
+        """A scalar in [time_control] (the natural way to write it) must still reach every domain."""
+        mock_params['time_control']['auxinput4_interval'] = 180
+        set_nml_params()
+        wrf = f90nml.read(tmp_path / 'namelist.input')
+        assert wrf['time_control']['auxinput4_interval'] == [180, 180, 180]
 
     def test_physics_override(self, mock_params, tmp_path):
         """[physics] with cu_physics array override."""

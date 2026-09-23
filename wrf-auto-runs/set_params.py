@@ -430,6 +430,12 @@ def set_nml_params(domains=None):
                     if k not in defaults.TIME_CONTROL_PIPELINE_KEYS}
     apply_overrides(wrf_tc, tc_overrides, domains, old_n_domains)
 
+    ## auxinput4_interval (SST updates from wrflowinp) is per domain in WRF, and a namelist scalar sets
+    ## domain 1 only: WRF's default for the others is 0, which never fires (tools/gen_streams.c), so every
+    ## nested domain kept its initial SST for the whole run (found 2026-09-24; the forecast archive's d02 and
+    ## the SST-study runs' d02 showed 0.000 K change while d01 changed by up to 5 K). One value per domain.
+    wrf_tc['auxinput4_interval'] = broadcast_field(wrf_tc['auxinput4_interval'], n_domains, domains, old_n_domains)
+
     ## WVT: auto-inject auxinput8 settings when tracer_opt=4
     ## TRMASK is read via manual open/input/close in mediation_wrfmain.F.
     ## Only io_form and inname are needed -- interval/begin/end alarm settings
