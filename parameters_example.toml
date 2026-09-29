@@ -91,18 +91,8 @@ n_cores = 8
 #                                 inputs/<run_uuid>/ (regardless of cleanup_inputs) — multiple
 #                                 invocations share the prefix; manually purge after the chain completes.
 
-# Named variable presets for common downstream tools. String or list of strings.
-# Variables from all selected presets are merged together.
-# Available presets: "wrf_to_int" (variables needed by the wrf_to_int tool).
-# output_presets = 'wrf_to_int'
-# output_presets = ['wrf_to_int']
-
-# Additional wrfout variables to retain (merged with any preset variables).
-# Coordinate variables (XLAT, XLONG, Times, XTIME) are always included automatically.
-# If any 3D atmospheric variable is listed (e.g. T, U, V, QVAPOR), auxiliary variables
-# needed for post-processing (P, PB, PH, PHB, HGT) are also included automatically.
-# Comment out both output_presets and output_variables to retain all variables.
-# output_variables = ['T2', 'Q2', 'PSFC', 'U10', 'V10', 'TSK', 'SWDOWN', 'GLW', 'OLR', 'ALBEDO', 'EMISS', 'HFX', 'LH', 'GRDFLX', 'SST', 'RECH', 'PREC_ACC_C', 'PREC_ACC_NC', 'QFX', 'SMOIS', 'TSLB', 'CANWAT', 'SFROFF', 'UDROFF', 'SNOW_ACC_NC', 'UST', 'ZNT', 'RMOL']
+# Output variables are set PER OUTPUT FILE, in each [time_control.*] block below (history_file,
+# summary_file, z_level_file, p_level_file). A top-level output_variables / output_presets is refused.
 
 # =============================================================================
 # Local (non-Docker) mode -- uncomment to run outside the Docker container.
@@ -138,6 +128,16 @@ interval_hours = [24, 1, 1, 1, 1, 1]    # wrfout output interval per domain (hou
 # In unified chunked mode the orchestrator submits enough chunks to cover the spin-up too,
 # and each chunk gets a chunk-aware history_begin_h so output starts cleanly at start_date.
 begin_hours = 0
+# Named variable presets for common downstream tools (wrfout only). String or list of strings;
+# variables from all selected presets are merged. Presets: defaults.OUTPUT_PRESETS
+# ("wrf_to_int", "wvt_2d", "wvt_3d").
+# output_presets = ['wrf_to_int']
+# Additional wrfout variables to retain (merged with any preset variables).
+# Coordinate variables (XLAT, XLONG, Times, XTIME) are always included automatically.
+# If any 3D atmospheric variable is listed (e.g. T, U, V, QVAPOR), auxiliary variables
+# needed for post-processing (P, PB, PH, PHB, HGT) are also included automatically.
+# Omit both output_presets and output_variables to retain all variables.
+# output_variables = ['T2', 'Q2', 'PSFC', 'U10', 'V10', 'TSK', 'SWDOWN', 'GLW', 'OLR', 'ALBEDO', 'EMISS', 'HFX', 'LH', 'GRDFLX', 'SST', 'RECH', 'PREC_ACC_C', 'PREC_ACC_NC', 'QFX', 'SMOIS', 'TSLB', 'CANWAT', 'SFROFF', 'UDROFF', 'SNOW_ACC_NC', 'UST', 'ZNT', 'RMOL']
 
 [time_control.summary_file]
 output = true                           # Enable wrfxtrm daily diagnostics (start/end dates must be on the hour)
@@ -147,6 +147,20 @@ n_days_per_file = 1                     # Days per wrfxtrm file (must be >= inte
 [time_control.z_level_file]
 output = true                           # Enable wrfzlevels height-interpolated output
 z_levels = [30, 80, 150, 200, 350, 500, 750, 1000, 1300, 1600, 2000, 2500, 3000, 4000, 5000, 7000, 10000]  # Heights in meters AGL
+# output_variables = ['U_ZL', 'V_ZL', 'T_ZL']   # optional; any of U/V/T/RH/GHT/S/TD/Q/P_ZL. Z_ZL is always kept.
+
+# Pressure-level diagnostics (WRF p_lev_diags, stream auxhist23 -> wrfplevels_d0N_<date>.nc), at the
+# wrfout interval. Off unless output = true; the whole block may be omitted. Needs a WRF base whose
+# start_em passes dry theta to pld (wrf-wps-intel-wvt-ubuntu >= 2.7), else the first frame after every
+# restart is warm-biased. Under adaptive time stepping WRF computes it on every step.
+# [time_control.p_level_file]
+# output = true
+# p_levels_hpa = [900, 850, 600, 500, 300]   # hPa, STRICTLY DESCENDING (WRF writes later levels as missing otherwise)
+# output_variables = ['U_PL', 'V_PL', 'T_PL', 'Q_PL', 'GHT_PL']   # optional; any of U/V/T/RH/GHT/S/TD/Q_PL. P_PL is always kept.
+#                                            # WRF writes every field at every level: pruning is by field only.
+# extrap_below_grnd = 1                      # 1 = missing (-999) below the lowest model level; 2 = extrapolate (UPP method)
+# use_tot_or_hyd_p = 2                       # 1 = total pressure, 2 = hydrostatic (WRF default)
+# U_PL/V_PL are GRID-relative. p_lev_missing is fixed at -999; the settings are stamped on each file.
 
 # =============================================================================
 # Domain geometry -- replaces namelist.wps &geogrid section.

@@ -679,6 +679,63 @@ def set_nml_params(domains=None):
     else:
         diags['z_lev_diags'] = 0
 
+    ## Per-file output_variables: resolve every stream now, so a bad list (or the moved top-level
+    ## output_variables / output_presets) refuses here -- before preprocessing -- not mid-run.
+    for stream in defaults.OUTPUT_STREAMS:
+        utils.resolve_stream_variables(params.file, stream)
+
+    ## P-level file: WRF's pressure-level diagnostics, stream auxhist23. Off unless
+    ## [time_control.p_level_file] output = true; utils.resolve_p_level_file holds the refusals.
+    ## Mirrors the z-level stream: same interval and frames as wrfout, and begin = history_begin (NOT
+    ## auxhist3's +1440), so each chunk's daily files line up with its wrfout. The three &diags
+    ## settings are written explicitly even at their defaults: the file does not record them.
+    ## Under use_adaptive_time_step WRF computes the diagnostic on EVERY step, not only at output
+    ## times (module_diagnostics_driver.F, the `.OR. use_adaptive_time_step` clause).
+    ## Needs a WRF base whose start_em passes dry theta to pld (wrf-wps-intel-wvt-ubuntu >= 2.7,
+    ## -avx512 >= 1.3, wvt-mr >= 1.1); older ones write a warm-biased first frame after every restart.
+    p_level = utils.resolve_p_level_file(params.file)
+
+    if p_level is not None:
+        if 0 in history_interval_nml:
+            raise ValueError(
+                '[time_control.p_level_file] follows the wrfout interval, and a domain has history interval 0 '
+                f'({history_interval_nml}); WRF refuses auxhist23_interval = 0 when wrf.exe starts.'
+            )
+        if not wrf_dom.get('use_adaptive_time_step', False):
+            # Without adaptive stepping WRF computes the diagnostic only on a step that ENDS on a multiple of
+            # the interval (module_diagnostics_driver.F:820); any other output frame would carry stale values.
+            parent_id, ratio = utils.to_list(wrf_dom['parent_id']), utils.to_list(wrf_dom['parent_time_step_ratio'])
+            dts = []
+            for d in range(n_domains):
+                dts.append(float(wrf_dom['time_step']) if d == 0 else dts[parent_id[d] - 1] / ratio[d])
+            bad = [(d + 1, iv, dt) for d, (iv, dt) in enumerate(zip(history_interval_nml, dts))
+                   if abs(iv * 60 / dt - round(iv * 60 / dt)) > 1e-6]
+            if bad:
+                raise ValueError(f'[time_control.p_level_file] with use_adaptive_time_step = false needs each '
+                                 f'output interval to be a whole number of time steps; (domain, minutes, dt s): {bad}')
+        if p_level['extrap_below_grnd'] != 1 and diags.get('z_lev_diags') == 1:
+            print('set_params: NOTE extrap_below_grnd from [time_control.p_level_file] also applies to wrfzlevels '
+                  '(WRF shares the setting between the two diagnostics)')
+        diags['p_lev_diags'] = 1
+        diags['press_levels'] = p_level['levels_pa']
+        diags['num_press_levels'] = len(p_level['levels_pa'])
+        diags['extrap_below_grnd'] = p_level['extrap_below_grnd']
+        diags['use_tot_or_hyd_p'] = p_level['use_tot_or_hyd_p']
+        diags['p_lev_missing'] = p_level['p_lev_missing']
+
+        wrf_tc['auxhist23_outname'] = params.plevel_outname
+        wrf_tc['io_form_auxhist23'] = 2
+        wrf_tc['auxhist23_interval'] = list(history_interval_nml)
+        wrf_tc['frames_per_auxhist23'] = list(frames_per_outfile)
+        wrf_tc['auxhist23_begin'] = [history_begin] * n_domains
+
+        interval = pendulum.interval(start_date, end_date.subtract(minutes=1))
+        files = utils.dt_to_file_names('wrfplevels', interval.range('days'), domain_i)
+        output_files.extend(files)
+
+    else:
+        diags['p_lev_diags'] = 0
+
     ## Date arrays
     wps_share['start_date'] = [new_start_date.strftime(params.wps_date_format)] * n_domains
     wps_share['end_date'] = [end_date.strftime(params.wps_date_format)] * n_domains

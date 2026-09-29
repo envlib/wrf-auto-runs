@@ -244,7 +244,7 @@ def test_deliver_output_files_routes_by_configuration(tmp_path, monkeypatch, no_
     import monitor_wrf
     f = str(tmp_path / 'wrfout_d02_2026-09-19_00:00:00')
     open(f, 'w').write('x')
-    monkeypatch.setattr(params, 'output_variables', [])
+    monkeypatch.setattr(params, 'file', {'time_control': {'history_file': {}}})  # no output_variables: no prune
     log = tmp_path / 'seen.txt'
     # neither: file stays, under its on-disk name
     monkeypatch.setattr(params, 'output_hook', None)

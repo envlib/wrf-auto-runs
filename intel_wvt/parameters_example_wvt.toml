@@ -12,14 +12,7 @@
 # Number of MPI processes for wrf.exe (via mpirun -n)
 n_cores = 8
 
-# Additional wrfout variables to retain (ncks filter). Comment out to keep all.
-# The per-region accumulators (TR_RAINNC, TR_RAINC, TR_SNOWNC, TR_GRAUPELNC,
-# TRQFX, PWAT_TR, VIMF_TR_*) carry a wvt_regions axis on a single variable, so
-# listing the name keeps every region. The 3D tracer named-members (qv_tr..qg_tr,
-# tr_thum_{u,v}_phy_dt) are separate per region -- list the base name and it is
-# auto-expanded to all num_wvt_regions (qv_tr -> qv_tr, qv_tr_02, ...), so the
-# list stays stable when the region count changes.
-# output_variables = ['T2', 'Q2', 'PSFC', 'U10', 'V10', 'RAINNC', 'RAINC', 'TR_RAINNC', 'TR_RAINC', 'TR_SNOWNC', 'TR_GRAUPELNC', 'TRQFX', 'PWAT_TR']
+# wrfout variables are set in [time_control.history_file] below (output_variables / output_presets).
 
 # =============================================================================
 # Local (non-Docker) mode -- uncomment to run outside the Docker container.
@@ -47,6 +40,15 @@ auxinput8_inname = "trmask_d<domain>"
 [time_control.history_file]
 interval_hours = [24, 1, 1, 1, 1, 1]
 begin_hours = 0
+
+# wrfout variables to retain (ncks filter). Omit to keep all.
+# The per-region accumulators (TR_RAINNC, TR_RAINC, TR_SNOWNC, TR_GRAUPELNC,
+# TRQFX, PWAT_TR, VIMF_TR_*) carry a wvt_regions axis on a single variable, so
+# listing the name keeps every region. The 3D tracer named-members (qv_tr..qg_tr,
+# tr_thum_{u,v}_phy_dt) are separate per region -- list the base name and it is
+# auto-expanded to all num_wvt_regions (qv_tr -> qv_tr, qv_tr_02, ...), so the
+# list stays stable when the region count changes.
+# output_variables = ['T2', 'Q2', 'PSFC', 'U10', 'V10', 'RAINNC', 'RAINC', 'TR_RAINNC', 'TR_RAINC', 'TR_SNOWNC', 'TR_GRAUPELNC', 'TRQFX', 'PWAT_TR']
 
 [time_control.summary_file]
 output = true

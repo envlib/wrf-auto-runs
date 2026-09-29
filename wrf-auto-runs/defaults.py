@@ -172,6 +172,56 @@ FDDA_PER_DOMAIN_FIELDS = {
 # Variables auto-included when output_variables filtering is active
 COORD_VARS_2D = {'Times', 'XLAT', 'XLONG', 'XTIME'}
 
+# ============================================================
+# Output streams
+# ============================================================
+
+# The fields WRF writes to the pressure- and height-level streams (Registry/registry.diags), minus
+# each stream's level vector (P_PL / Z_ZL), which is always kept. WRF writes EVERY one of these at
+# EVERY requested level -- there is no per-variable level list -- so pruning is by variable only.
+PLEVEL_VARIABLES = ('U_PL', 'V_PL', 'T_PL', 'RH_PL', 'GHT_PL', 'S_PL', 'TD_PL', 'Q_PL')
+ZLEVEL_VARIABLES = ('U_ZL', 'V_ZL', 'T_ZL', 'RH_ZL', 'GHT_ZL', 'S_ZL', 'TD_ZL', 'Q_ZL', 'P_ZL')
+
+# One row per WRF output file the pipeline carries -- the single source for the filename prefixes
+# utils.query_out_files accepts, the [time_control.<block>] each stream's `output_variables` lives
+# in, what the prune always keeps, and which names a request may use. `keep` is intersected with
+# each file before ncks sees it (XTIME, for one, is not in the auxhist22/23 streams, and `ncks -v`
+# exits 1 on an absent name). `strict`: a requested name missing from a file is a data-level
+# failure of that stream (WRF always writes the full set), rather than a per-file warn-and-drop,
+# which wrfout needs because d01 and d02 legitimately carry different variables.
+OUTPUT_STREAMS = {
+    'history': {'block': 'history_file', 'prefix': 'wrfout', 'keep': frozenset(COORD_VARS_2D),
+                'allowed': None, 'strict': False},
+    'summary': {'block': 'summary_file', 'prefix': 'wrfxtrm', 'keep': frozenset(COORD_VARS_2D),
+                'allowed': None, 'strict': False},
+    'zlevel': {'block': 'z_level_file', 'prefix': 'wrfzlevels', 'keep': frozenset(COORD_VARS_2D | {'Z_ZL'}),
+               'allowed': ZLEVEL_VARIABLES, 'strict': True},
+    'plevel': {'block': 'p_level_file', 'prefix': 'wrfplevels', 'keep': frozenset(COORD_VARS_2D | {'P_PL'}),
+               'allowed': PLEVEL_VARIABLES, 'strict': True},
+}
+
+# [time_control.p_level_file] keys. Anything else is refused, so a typo cannot silently turn a
+# setting off.
+P_LEVEL_FILE_KEYS = {'output', 'p_levels_hpa', 'output_variables', 'extrap_below_grnd', 'use_tot_or_hyd_p'}
+
+# The &diags / &time_control names the p_level_file block owns. A raw [diags] or [time_control]
+# passthrough of any of them is refused: the block would silently overwrite some and leave others,
+# e.g. a raw press_levels surviving next to the pipeline's p_lev_diags = 0.
+P_LEVEL_OWNED_DIAGS_KEYS = {'p_lev_diags', 'p_lev_diags_dfi', 'num_press_levels', 'press_levels',
+                            'use_tot_or_hyd_p', 'extrap_below_grnd', 'p_lev_missing'}
+
+# The two &diags settings the z-level diagnostic ALSO reads (phys/module_diagnostics_driver.F passes both to
+# zld). Setting them in [time_control.p_level_file] therefore changes wrfzlevels too; a raw [diags] copy
+# is refused only when the p-level block exists.
+DIAGS_KEYS_SHARED_WITH_ZLEVEL = {'extrap_below_grnd', 'use_tot_or_hyd_p'}
+
+# frame/module_driver_constants.F `max_plevs`.
+WRF_MAX_PLEVS = 100
+
+# WRF's missing value for the p-level stream (registry.diags default). Written to the namelist
+# explicitly, never configurable: cfdb-ingest's WrfPlevIngest defaults to the same sentinel.
+P_LEV_MISSING = -999.0
+
 COORD_VARS_3D = {'P', 'PB', 'PH', 'PHB', 'HGT'}
 
 # WRF variables with a vertical (eta-level) dimension
@@ -201,7 +251,7 @@ WVT_TRACER_FAMILIES = {
 # Every variable that exists ONLY in a WVT (tracer_opt = 4) run. From WRF image
 # wrf-wps-intel-wvt-ubuntu:2.5 on, these fields are Registry-PACKAGED: a tracer-off run
 # neither allocates nor writes them (before, they were written as zeros). `ncks -v` refuses a
-# name the file lacks and utils.filter_variables runs it with check=True, so a tracer-off run
+# name the file lacks and utils.filter_output_files runs it with check=True, so a tracer-off run
 # whose output list carries a WVT preset would abort mid-run unless these are pruned first
 # (utils.prune_for_tracer_opt). Matched case-insensitively; the 3-D families above are
 # included by base name (their _0N members are pruned by _wvt_tracer_base). The test suite
@@ -240,7 +290,7 @@ OUTPUT_PRESETS = {
     # Water-vapour-tracer (WVT) campaigns. Two presets, ADDITIVE not nested:
     #   output_presets = ['wvt_2d']            -> long campaigns (C1: 45 yr)
     #   output_presets = ['wvt_2d', 'wvt_3d']  -> short runs (case studies, S1 events)
-    # They union (see params.py), so 'wvt_3d' holds ONLY the 3D additions and the
+    # They union (utils.resolve_stream_variables), so 'wvt_3d' holds ONLY the 3D additions and the
     # 2D list is never duplicated.
     #
     # Sizing measured on a 12 km d01, 8 regions, 50 levels (2026-08-26): a full
@@ -431,5 +481,5 @@ DOMAINS_PIPELINE_KEYS = (
 # Keys in [time_control] consumed by the pipeline (not passed to WRF &time_control)
 TIME_CONTROL_PIPELINE_KEYS = {
     'start_date', 'end_date', 'duration_hours', 'interval_hours',
-    'history_file', 'summary_file', 'z_level_file',
+    'history_file', 'summary_file', 'z_level_file', 'p_level_file',
 }

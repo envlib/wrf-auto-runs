@@ -12,6 +12,8 @@ import pytest
 _project_root = pathlib.Path(__file__).resolve().parent.parent
 _toml = _project_root / "parameters.toml"
 _example = _project_root / "parameters_example.toml"
+if not _example.exists():  # the example lives at the repo root, one level above the package
+    _example = _project_root.parent / "parameters_example.toml"
 _original_text = None
 
 if not _toml.exists() and _example.exists():

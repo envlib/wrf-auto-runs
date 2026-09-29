@@ -11,7 +11,6 @@ import pathlib
 
 from defaults import GEOGRID_ARRAY_FIELDS as geogrid_array_fields
 from defaults import GEOGRID_SINGLE_FIELDS as geogrid_single_fields
-from defaults import OUTPUT_PRESETS
 
 ############################################
 ### Read params file
@@ -81,21 +80,10 @@ if 'restart_interval_days' in os.environ:
 if 'restart_stop_after_upload' in os.environ:
     file.setdefault('restart', {})['stop_after_upload'] = os.environ['restart_stop_after_upload'].lower() in ('true', '1', 'yes')
 
-## Resolve output presets + user variables into a single list
-_preset_vars = set()
-if 'output_presets' in file:
-    _raw_presets = file['output_presets']
-    if isinstance(_raw_presets, str):
-        _raw_presets = [_raw_presets]
-    for _p in _raw_presets:
-        if _p not in OUTPUT_PRESETS:
-            raise ValueError(f"Unknown output preset: '{_p}'. Available presets: {sorted(OUTPUT_PRESETS.keys())}")
-        _preset_vars.update(OUTPUT_PRESETS[_p])
-
-_user_vars = set(file['output_variables']) if 'output_variables' in file else set()
-
-_combined = _preset_vars | _user_vars
-output_variables = sorted(_combined) if _combined else None
+## Output variables are NOT resolved here. Each output file's `output_variables` (and history's
+## `output_presets`) lives in its own [time_control.<file>] block and is resolved at CALL time from
+## `file` by utils.resolve_stream_variables -- an import-time list would ignore every later change to
+## `file`, which is exactly how the test fixture drives configurations (it patches params.file).
 
 run_path = data_path.joinpath('run')
 
@@ -253,6 +241,7 @@ wrf_nml_path = data_path.joinpath('namelist.input')
 history_outname = "wrfout_d<domain>_<date>.nc"
 summ_outname = "wrfxtrm_d<domain>_<date>.nc"
 zlevel_outname = 'wrfzlevels_d<domain>_<date>.nc'
+plevel_outname = 'wrfplevels_d<domain>_<date>.nc'
 
 # wrf_nml_one_first_fields = ('parent_time_step_ratio',)
 

@@ -24,13 +24,13 @@ from `parameters.toml` (`tracer_opt`/`[wvt]`) and is image-agnostic — pick the
 
 | Variant | Compiler | Pipeline image | Build context | Base (wrf-docker-builds) |
 |---|---|---|---|---|
-| no-WVT | gfortran | `wrf-auto-runs:2.7` | `gfortran_wrf/` ✦ | `wrf-wps-debian:1.2` |
-| no-WVT | Intel | `wrf-auto-runs-intel:1.3` | `intel_wrf/` | `wrf-wps-intel-ubuntu:1.0` |
-| single-region WVT | gfortran | `wrf-auto-runs-wvt:1.8` | `gfortran_wvt/` | `wrf-wps-wvt-debian:1.3` |
-| single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.0` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.0` ✦ |
-| **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.0` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.0` ✦ |
-| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.12`** (2.12 = 2.11 + nested-domain SST updates; 2.11 = pipeline-only over base 2.6: intermediate input, output hook, `upload_end_frame`) | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.6` |
-| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.5` (the 2.12 pipeline: + the `SENTRY_DSN` env override and nested-domain SST updates; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.2` |
+| no-WVT | gfortran | `wrf-auto-runs:2.8` (also the root `Dockerfile`/`docker-compose.yml`, same tag — bump both) | `gfortran_wrf/` ✦ | `wrf-wps-debian:1.2` |
+| no-WVT | Intel | `wrf-auto-runs-intel:1.4` | `intel_wrf/` | `wrf-wps-intel-ubuntu:1.0` |
+| single-region WVT | gfortran | `wrf-auto-runs-wvt:1.9` | `gfortran_wvt/` | `wrf-wps-wvt-debian:1.3` |
+| single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.1` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.0` ✦ |
+| **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.1` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.1` ✦ |
+| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.13`** (2.13 = pressure-level output + per-file `output_variables`, on base 2.7 whose init-time p/z-level diagnostics use dry θ; 2.12 = 2.11 + nested-domain SST updates; 2.11 = pipeline-only over base 2.6: intermediate input, output hook, `upload_end_frame`) | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.7` |
+| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.6` (the 2.13 pipeline on base avx512 1.3; 1.5 = the 2.12 pipeline: + the `SENTRY_DSN` env override and nested-domain SST updates; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.3` |
 | reference (WRF 4.3.3) | gfortran | `wrf-auto-runs-wvt-ref:1.2` | `gfortran_wvt_ref/` | `wrf-wps-wvt-ref-debian:1.0` |
 
 ✦ = **new scaffolding — build + validate on demand** (gfortran multi-region is the higher-risk
@@ -87,7 +87,7 @@ cells' surface ET, so an overlapped cell double-counts and the per-region fracti
 disjoint regions sum EXACTLY to a single all-source run (the linearity the design relies on) — to combine
 areas you ADD them, never subtract. Per-region outputs: 2D accumulators (`TR_RAINNC`/`TR_RAINC`/`PWAT_TR`/…)
 carry a `wvt_regions` axis on one variable; 3D tracer fields use named members (`qv_tr`, `qv_tr_02`..`_0N`),
-which `utils.resolve_output_variables` auto-expands when filtering `output_variables`.
+which `utils.resolve_output_variables` auto-expands when filtering `[time_control.history_file] output_variables`.
 `set_params.validate_wvt_regions` pre-flights the constraints (count≤8; for >1: `tracer_opt=4`,
 `bl_pbl_physics=0`, `tracer3dsource=tracer3dsink=0`). A flat single-region `[wvt]` block still works (= N=1).
 See `intel_wvt/parameters_example_wvt.toml`. **Cost:** the base atmosphere is integrated once and the
@@ -139,7 +139,7 @@ uv run pytest                   # pytest wrf-auto-runs/tests/
 6. If `restart_state is not None`: `download_wrfrst_to_run_path(run_uuid)` pulls the prior chunk's wrfrst from S3 into the freshly-recreated run_path.
 7. `apply_restart_namelist(restart_state, restart_interval_minutes, end_date_override=chunk_end)` — always called (sets `restart_interval` and `write_hist_at_0h_rst=.true.` on chunk 1 too); on chunks 2+ also sets `restart=.true.` and `start_date*` = wrfrst timestamp, `override_restart_timers=.true.`. The `write_hist_at_0h_rst` flag forces wrf.exe to write a history frame at chunk_start so the next chunk's `Feb13_00_00_00.nc` clobbers any prior 1-frame version with a full 8-frame version. ⚠ That clobber requires both uploads to use the SAME filename, so the archive naming convention must never change mid-chain — see "Archived output filenames" below. With `stop_after_upload=true`, also overrides `end_date*` to `chunk_end` so wrf.exe exits naturally at the chunk boundary (no SIGTERM).
 8. `upload_chunk_namelists(run_uuid)` — uploads ONLY namelist.input + namelist.wps to `inputs/<run_uuid>/` (debug archive). No wrf*input/bdy/fdda/lowinp/trmask uploads — those are local-only in this mode.
-9. `monitor_wrf(...)` — runs `wrf.exe` via `mpirun -n {n_cores}`; polls every 60s for completed wrfout / wrfxtrm / wrfzlevels / wrfrst files and uploads them.
+9. `monitor_wrf(...)` — runs `wrf.exe` via `mpirun -n {n_cores}`; polls every 60s for completed wrfout / wrfxtrm / wrfzlevels / wrfplevels / wrfrst files, prunes each to its own stream's `output_variables` (`utils.filter_output_files`) and uploads them.
 10. If `params.restart_stop_after_upload`: return (caller submits next chunk container). Else loop to step 1.
 
 ### Single-stage / preprocess-only
@@ -207,7 +207,7 @@ Enables the unified per-chunk mode and configures wrfrst checkpointing.
 
 - **The rule is injected once, at the point of consumption**, not at the four `rename_dict` construction sites (`main.py:223/330/346/351`). `rename_files` has no other caller, so one injection covers every path including future ones.
 - **`rename_files` matches each rule against the ORIGINAL filename**, never the partially-rewritten one, and returns every input file whether or not a rule matched. The nested-ndown map chains (`{'_d01_': '_d02_', '_d02_': '_d03_'}`), so matching on a rewritten name lands two domains on one target and `os.rename` destroys one silently; and dropping unmatched files strands them after a failed upload, since they already carry renamed names on the retry. Both have regression tests in `tests/test_rename_files.py` — that file is the only coverage this function has, so don't refactor it without reading them.
-- **`wrfrst` must never be renamed** — it has to round-trip into `run_path` under the name `wrf.exe` reconstructs. It cannot reach `rename_files` (which only receives `query_out_files` output, prefix-filtered to `wrfout_d`/`wrfxtrm_d`/`wrfzlevels_d`), but the colon rule *would* match its name if it ever did.
+- **`wrfrst` must never be renamed** — it has to round-trip into `run_path` under the name `wrf.exe` reconstructs. It cannot reach `rename_files` (which only receives `query_out_files` output, prefix-filtered to the `defaults.OUTPUT_STREAMS` prefixes), but the colon rule *would* match its name if it ever did.
 
 WRF's `nocolons` namelist option was evaluated and **rejected**: it rewrites every filename WRF constructs — including the `met_em` input `real.exe` opens (`real_em.F:440` → `module_io_domain.F:395`) — and silently disables the `NUM_METGRID_SOIL_LEVELS` check, which `input_wrf.F:667` gates on a date-string equality that can never hold once the option is on. Do not re-propose it.
 
@@ -222,7 +222,7 @@ WRF's `nocolons` namelist option was evaluated and **rejected**: it rewrites eve
 Under `<remote.output.path>/`:
 
 - `inputs/<run_uuid>/` — Preprocess outputs handed to the WRF stage: `namelist.input`, `namelist.wps`, `wrfinput_d*`, `wrfbdy_d*`, `wrffdda_d*` (FDDA only), `wrflowinp_d*` (some SST options only), `trmask_d*` (WVT only), `wrfrst_d*_<TIMESTAMP>` (restart only — only the latest per domain). Purged after successful WRF if `cleanup_inputs=true` AND NOT `restart_stop_after_upload`.
-- `wrfout_d*` / `wrfxtrm_d*` / `wrfzlevels_d*` (directly under `<remote.output.path>/`, NO run_uuid prefix) — Main WRF output files. Uploaded by `monitor_wrf` during the run, deleted locally after upload. (Earlier docs incorrectly placed these under a `<run_uuid>/` subprefix; the actual code in `utils.ul_output_files` uploads to the root path.)
+- `wrfout_d*` / `wrfxtrm_d*` / `wrfzlevels_d*` / `wrfplevels_d*` (directly under `<remote.output.path>/`, NO run_uuid prefix) — Main WRF output files. Uploaded by `monitor_wrf` during the run, deleted locally after upload. (Earlier docs incorrectly placed these under a `<run_uuid>/` subprefix; the actual code in `utils.ul_output_files` uploads to the root path.)
 - `logs/<run_uuid>/rsl.*` — `rsl.error.*` / `rsl.out.*` from `real.exe` / `ndown.exe` / `wrf.exe` failures.
 
 ## Key Architecture
@@ -240,7 +240,7 @@ All Python modules live under `wrf-auto-runs/`.
 
 - **ERA5 / wrfout input**: downloaded from S3 → converted to WPS intermediate format → consumed by metgrid → deleted (if `cleanup_inputs=true`).
 - **Preprocess-stage outputs**: `wrfinput_d*` / `wrfbdy_d*` / `wrffdda_d*` / `wrflowinp_d*` / `trmask_d*` written by `real.exe` to `params.run_path`. Local-only in unified chunked mode; left in `run_path` for inspection in preprocess_only mode.
-- **WRF-stage outputs**: `wrfout` (history), `wrfxtrm` (daily diagnostics), `wrfzlevels` (height-interpolated) → uploaded to `<run_uuid>/` during the run by `monitor_wrf` → deleted locally.
+- **WRF-stage outputs**: `wrfout` (history), `wrfxtrm` (daily diagnostics), `wrfzlevels` (height-interpolated), `wrfplevels` (pressure-level) → uploaded to `<run_uuid>/` during the run by `monitor_wrf` → deleted locally.
 
 ## TOML → WRF Namelist Mapping
 

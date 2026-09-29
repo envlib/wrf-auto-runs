@@ -11,6 +11,7 @@ import shlex
 import signal
 import subprocess
 import pathlib
+import re
 
 import h5netcdf
 import numpy as np
@@ -125,7 +126,8 @@ def query_out_files(run_path, out_files=None, include_xtrm=False):
 
     out_files: optional iterable of expected filenames. When provided, only files whose name
         is in this set are returned (legacy/exact-match mode). When None, glob-match against
-        the known output prefixes (wrfout_d, wrfxtrm_d, wrfzlevels_d) — needed for restart
+        the known output prefixes (defaults.OUTPUT_STREAMS: wrfout_d, wrfxtrm_d, wrfzlevels_d,
+        wrfplevels_d) — needed for restart
         runs where WRF's first wrfout may be offset by history_interval and therefore won't
         appear in a cold-start-derived expected list.
     include_xtrm: when False, skip wrfxtrm files entirely.
@@ -142,10 +144,8 @@ def query_out_files(run_path, out_files=None, include_xtrm=False):
             if file_name not in out_files_set:
                 continue
         else:
-            # Glob mode — accept any wrfout / wrfxtrm / wrfzlevels file.
-            if not (file_name.startswith('wrfout_d')
-                    or file_name.startswith('wrfxtrm_d')
-                    or file_name.startswith('wrfzlevels_d')):
+            # Glob mode — accept any file of a known output stream.
+            if not file_name.startswith(output_prefixes()):
                 continue
 
         try:
@@ -184,10 +184,10 @@ def select_files_to_ul(out_files, min_files, wrfxtrm_skip_newest=False):
     """Flatten out_files into a list of file paths to upload.
 
     For each (out_name, domain) group:
-    - wrfout / wrfzlevels: upload file_paths[min_files:] (skip the `min_files` newest).
+    - wrfout / wrfzlevels / wrfplevels: upload file_paths[min_files:] (skip the `min_files` newest).
       During polling pass min_files=1 to skip the file WRF is still writing; at post-success
-      pass min_files=0 (or 1 if the chunk ends exactly on midnight and the newest wrfout is
-      a deceptive partial-day file).
+      pass min_files=0 -- the midnight end-frame file is removed beforehand by name
+      (drop_end_frame_files), not by position, so a stream without one keeps its last day.
     - wrfxtrm: special-cased because at chunk-end ALL wrfxtrm files are complete (each covers
       `n_days_per_file` days and is closed when that period ends), so we want them all even
       when the corresponding wrfout would be skipped. During polling, however, the newest
@@ -369,7 +369,7 @@ def prune_for_tracer_opt(names, tracer_opt):
 
     Returns (kept, pruned), both in the input order. From WRF image 2.5 the WVT fields are
     Registry-packaged and simply do not exist in a tracer_opt != 4 wrfout; `ncks -v` on a
-    missing name exits 1 and filter_variables runs it with check=True, so without this a
+    missing name exits 1 and filter_output_files runs it with check=True, so without this a
     tracer-off run carrying a WVT output preset aborts. Prune-with-a-log-line rather than a
     config-time refusal: configs legitimately carry an inert WVT list with tracers off (the P1
     timing family's n00, which has no output target). Pure function so it is testable without
@@ -397,9 +397,175 @@ def present_in_file(names, file_path):
     return present, missing
 
 
-def filter_variables(files, variables):
-    """Subset every wrfout in `files` to `variables` (+ coordinates) in place with ncks."""
-    # Multi-region WVT: expand requested tracer families to all active regions.
+def output_prefixes():
+    """The filename prefixes of every output stream the pipeline carries (`wrfout_d`, ...)."""
+    return tuple(spec['prefix'] + '_d' for spec in defaults.OUTPUT_STREAMS.values())
+
+
+def stream_of(file_name):
+    """The OUTPUT_STREAMS key a basename belongs to, or None."""
+    for stream, spec in defaults.OUTPUT_STREAMS.items():
+        if file_name.startswith(spec['prefix'] + '_d'):
+            return stream
+    return None
+
+
+def resolve_stream_variables(file, stream):
+    """
+    The `output_variables` requested for one output stream, resolved from the config dict at CALL
+    time, or None when that stream is not filtered (its files are delivered as WRF wrote them).
+
+    Each file's list lives in its own block: [time_control.history_file] (with `output_presets`),
+    [time_control.summary_file], [time_control.z_level_file], [time_control.p_level_file]. The old
+    top-level `output_variables` / `output_presets` are refused with the new location -- silently
+    ignoring them would upload unpruned wrfout (~12x the pruned size). Resolving at call time, not in
+    params at import, is what lets the tests drive this through params.file like everything else.
+    """
+    for key in ('output_variables', 'output_presets'):
+        if key in file:
+            raise ValueError(
+                f'Top-level `{key}` has moved to [time_control.history_file] (it only ever applied to wrfout). '
+                f'The z-level, p-level and summary files each take their own optional `output_variables` in '
+                f'their own [time_control.*] block.'
+            )
+    spec = defaults.OUTPUT_STREAMS[stream]
+    block = file.get('time_control', {}).get(spec['block'], {}) or {}
+    names = set()
+    presets = block.get('output_presets', [])
+    if presets and stream != 'history':
+        raise ValueError(f"[time_control.{spec['block']}] output_presets: presets are wrfout variable sets and "
+                         f"belong in [time_control.history_file]")
+    if isinstance(presets, str):
+        presets = [presets]
+    for preset in presets:
+        if preset not in defaults.OUTPUT_PRESETS:
+            raise ValueError(f"Unknown output preset: '{preset}'. Available presets: "
+                             f"{sorted(defaults.OUTPUT_PRESETS.keys())}")
+        names.update(defaults.OUTPUT_PRESETS[preset])
+    requested = block.get('output_variables')
+    if requested is not None:
+        if isinstance(requested, str) or not all(isinstance(v, str) for v in requested):
+            raise ValueError(f"[time_control.{spec['block']}] output_variables must be a list of variable names")
+        if not requested:
+            raise ValueError(f"[time_control.{spec['block']}] output_variables = []: omit the key to keep every "
+                             f"variable -- an empty list would silently mean 'no filter', not 'coordinates only'")
+        if spec['allowed'] is not None:
+            unknown = sorted(set(requested) - set(spec['allowed']) - spec['keep'])
+            if unknown:
+                raise ValueError(f"[time_control.{spec['block']}] output_variables: {unknown} are not written to "
+                                 f"this file. WRF writes: {list(spec['allowed'])} (Registry/registry.diags)")
+        names.update(requested)
+    return sorted(names) if names else None
+
+
+def resolve_p_level_file(file):
+    """
+    Validate [time_control.p_level_file] and return what set_params writes and the filter stamps, or
+    None when the block is absent or `output = false` (the default: nothing about the run changes).
+
+    Returned keys: levels_hpa, levels_pa, extrap_below_grnd, use_tot_or_hyd_p, p_lev_missing, variables
+    (the requested list, or None = keep all nine fields). Each refusal names a failure WRF would not
+    report until wrf.exe starts, or would not report at all.
+    """
+    tc = file.get('time_control', {})
+    block = tc.get('p_level_file')
+    # extrap_below_grnd / use_tot_or_hyd_p are SHARED with the z-level diagnostic (module_diagnostics_driver.F
+    # passes both to zld too), so a z-level-only config may set them raw; they are the block's only when it exists.
+    owned = defaults.P_LEVEL_OWNED_DIAGS_KEYS - (set() if block is not None else defaults.DIAGS_KEYS_SHARED_WITH_ZLEVEL)
+    raw_diags = sorted(set(file.get('diags', {})) & owned)
+    raw_tc = sorted(k for k in tc if 'auxhist23' in str(k).lower())   # io_form_/frames_per_ too
+    if raw_diags or raw_tc:
+        raise ValueError(
+            f'{raw_diags + raw_tc} are set by [time_control.p_level_file]; remove them from [diags] / '
+            f'[time_control]. A raw passthrough would be partly overwritten and partly kept.'
+        )
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise ValueError('[time_control.p_level_file] must be a table')
+    unknown = sorted(set(block) - defaults.P_LEVEL_FILE_KEYS)
+    if unknown:
+        raise ValueError(f'[time_control.p_level_file]: unknown key(s) {unknown}; '
+                         f'allowed: {sorted(defaults.P_LEVEL_FILE_KEYS)}')
+    if 'output' not in block:
+        raise ValueError('[time_control.p_level_file] needs an explicit `output = true` or `false` '
+                         '(a block with levels but no switch would silently be off)')
+    output = block['output']
+    if type(output) is not bool:
+        raise ValueError(f'[time_control.p_level_file] output must be true or false, got {output!r}')
+    variables = resolve_stream_variables(file, 'plevel')
+    if not output:
+        return None
+
+    levels = block.get('p_levels_hpa')
+    if not isinstance(levels, list) or not levels:
+        raise ValueError('[time_control.p_level_file] output = true needs p_levels_hpa, a non-empty list (hPa)')
+    if any(type(v) not in (int, float) for v in levels):
+        raise ValueError(f'[time_control.p_level_file] p_levels_hpa must be numbers (hPa), got {levels}')
+    if any(not 0 < v < 1100 for v in levels):
+        raise ValueError(f'[time_control.p_level_file] p_levels_hpa = {levels}: every level must be in (0, 1100) '
+                         f'hPa. A value like 85000 is Pa -- the unit here is hPa.')
+    if len(levels) > defaults.WRF_MAX_PLEVS:
+        raise ValueError(f'[time_control.p_level_file] {len(levels)} levels; WRF allows at most '
+                         f'{defaults.WRF_MAX_PLEVS} (max_plevs)')
+    if any(nxt >= cur for cur, nxt in zip(levels, levels[1:])):
+        raise ValueError(
+            f'[time_control.p_level_file] p_levels_hpa = {levels} must be STRICTLY DESCENDING (highest pressure '
+            f'first). WRF keeps its vertical search index across levels (phys/module_diag_pld.F ke_h/ke_f), so '
+            f'every level after an out-of-order one is written as missing everywhere.'
+        )
+    p_top_hpa = file.get('domains', {}).get(
+        'p_top_requested', defaults.WRF_DOMAINS_DEFAULTS['p_top_requested']) / 100.0
+    if levels[-1] <= p_top_hpa:
+        raise ValueError(f'[time_control.p_level_file] {levels[-1]} hPa is at or above the model top '
+                         f'(p_top_requested = {p_top_hpa} hPa): that level would be missing everywhere')
+    settings = {}
+    for key, allowed, default in (('extrap_below_grnd', (1, 2), 1), ('use_tot_or_hyd_p', (1, 2), 2)):
+        value = block.get(key, default)
+        if type(value) is not int or value not in allowed:  # type(): `true in (1, 2)` is True in Python
+            raise ValueError(f'[time_control.p_level_file] {key} must be the integer 1 or 2, got {value!r}')
+        settings[key] = value
+    return {
+        'levels_hpa': list(levels),
+        'levels_pa': [float(v) * 100.0 for v in levels],
+        'extrap_below_grnd': settings['extrap_below_grnd'],
+        'use_tot_or_hyd_p': settings['use_tot_or_hyd_p'],
+        'p_lev_missing': defaults.P_LEV_MISSING,
+        'variables': variables,
+    }
+
+
+def plevel_provenance(p_level):
+    """Global attributes stamped on every archived wrfplevels file. WRF records none of these in the
+    file, and the namelist that did is overwritten every chunk and purged after a chain."""
+    return {
+        'p_lev_press_levels_pa': np.asarray(p_level['levels_pa'], dtype='float64'),
+        'p_lev_extrap_below_grnd': np.int32(p_level['extrap_below_grnd']),
+        'p_lev_use_tot_or_hyd_p': np.int32(p_level['use_tot_or_hyd_p']),
+        'p_lev_missing': np.float64(p_level['p_lev_missing']),
+    }
+
+
+def _ncks_prune(file_path, names):
+    """Subset one file to `names` in place: `ncks -O -4 -L 1 -v ...` (the same command, and so the same
+    compression, for every stream)."""
+    orig_path, orig_file_name = os.path.split(file_path)
+    cmd_list = ['ncks', '-O', '-4', '-L', '1', '-v', ','.join(names), orig_file_name, 'wrf_temp.nc']
+    start = pendulum.now('UTC')
+    subprocess.run(cmd_list, capture_output=True, text=True, check=True, cwd=orig_path)
+    os.replace(os.path.join(orig_path, 'wrf_temp.nc'), file_path)
+    print(f'-- ncks pruned {orig_file_name} in {(pendulum.now("UTC") - start).total_seconds():.1f} s')
+
+
+def _stream_alert(message):
+    print(f'filter_output_files: WARNING {message}')
+    if params.is_sentry:
+        sentry_sdk.capture_message(message, level='warning')
+
+
+def _history_keep_list(variables):
+    """wrfout's list: + coordinates (and the 3-D auxiliaries), WVT families expanded to the active
+    regions, WVT-only names dropped when tracers are off."""
     tracer_opt = params.file.get('dynamics', {}).get('tracer_opt', 0)
     if isinstance(tracer_opt, list):
         tracer_opt = tracer_opt[0]
@@ -407,26 +573,114 @@ def filter_variables(files, variables):
     resolved = resolve_output_variables(variables, n_wvt)
     resolved, pruned = prune_for_tracer_opt(resolved, tracer_opt)
     if pruned:
-        print(f'filter_variables: tracer_opt={tracer_opt}, pruned {len(pruned)} WVT-only variable(s) '
+        print(f'filter_output_files: tracer_opt={tracer_opt}, pruned {len(pruned)} WVT-only variable(s) '
               f'that a tracer-off run does not write: {sorted(pruned)}')
-    warned = set()
+    return resolved
+
+
+_unreadable_alerted = set()
+
+
+def filter_output_files(files):
+    """
+    Prune every completed output file in `files`, in place, to its OWN stream's `output_variables`
+    (resolve_stream_variables); stamp wrfplevels files with their &diags provenance. Streams with no
+    list are left as WRF wrote them. Returns the files to deliver.
+
+    Every stream's configuration is resolved before any file is touched, so a config error raises
+    with nothing half-pruned. After that the `strict` (z-/p-level) streams are ISOLATED -- they never
+    raise, so they can neither block the wrfout in the same poll nor lose the chunk (whose wrfrst is
+    only written at its end):
+      - a requested field absent, or ncks failing -> alerted, the file is delivered UNPRUNED;
+      - the file cannot be opened at all (truncated, vanished) -> alerted once, and the file is NOT
+        delivered this time: it stays in run_path, so a later poll or the post-run pass retries it.
+        Uploading an unreadable file would archive garbage (review plev-autoruns-code-2).
+    wrfout (and wrfxtrm) keep their existing behaviour: a requested name a file lacks is warned and
+    dropped per file (d01 and d02 differ), and an ncks failure raises.
+    """
+    by_stream = {}
     for file_path in files:
-        orig_path, orig_file_name = os.path.split(file_path)
-        if 'wrfout' in orig_file_name:
-            # Per FILE (d01 and d02 carry different variable sets, and iterdir order is not
-            # sorted): ncks must never be handed a name this particular file lacks.
-            present, missing = present_in_file(resolved, file_path)
+        stream = stream_of(os.path.basename(file_path))
+        if stream is not None:
+            by_stream.setdefault(stream, []).append(file_path)
+    requests = {stream: resolve_stream_variables(params.file, stream) for stream in by_stream}
+    p_level = resolve_p_level_file(params.file) if 'plevel' in by_stream else None
+    withheld = set()
+
+    for stream, spec in defaults.OUTPUT_STREAMS.items():
+        if spec['strict'] or not requests.get(stream):
+            continue
+        keep = _history_keep_list(requests[stream]) if stream == 'history' else sorted(
+            set(requests[stream]) | spec['keep'])
+        warned = set()
+        for file_path in by_stream[stream]:
+            # Per FILE: ncks must never be handed a name this particular file lacks.
+            present, missing = present_in_file(keep, file_path)
+            missing = [v for v in missing if v not in spec['keep']]
             if missing and tuple(sorted(missing)) not in warned:
                 warned.add(tuple(sorted(missing)))
-                print(f'filter_variables: WARNING {len(missing)} requested variable(s) are not in '
-                      f'{orig_file_name} and are dropped from its ncks list: {sorted(missing)}')
-            vars_str = ','.join(present)
-            cmd_str = f'ncks -O -4 -L 1 -v {vars_str} {orig_file_name} wrf_temp.nc'
-            cmd_list = shlex.split(cmd_str)
-            p = subprocess.run(cmd_list, capture_output=True, text=True, check=True, cwd=orig_path)
-            os.replace(os.path.join(orig_path, 'wrf_temp.nc'), file_path)
+                print(f'filter_output_files: WARNING {len(missing)} requested variable(s) are not in '
+                      f'{os.path.basename(file_path)} and are dropped from its ncks list: {sorted(missing)}')
+            _ncks_prune(file_path, present)
 
-    return True
+    for stream, spec in defaults.OUTPUT_STREAMS.items():
+        if not spec['strict']:
+            continue
+        for file_path in by_stream.get(stream, []):
+            name = os.path.basename(file_path)
+            try:
+                present, missing = present_in_file(sorted(set(requests[stream] or []) | spec['keep']), file_path)
+            except Exception as err:
+                withheld.add(file_path)
+                if file_path not in _unreadable_alerted:
+                    _unreadable_alerted.add(file_path)
+                    _stream_alert(f'{name}: cannot be opened ({err!r}); NOT delivered -- left in run_path for a retry')
+                continue
+            if requests[stream]:
+                missing = [v for v in missing if v not in spec['keep']]
+                if missing:
+                    _stream_alert(f'{name}: requested {sorted(missing)} not in the file; delivering it UNPRUNED')
+                else:
+                    try:
+                        _ncks_prune(file_path, present)
+                    except subprocess.CalledProcessError as err:
+                        _stream_alert(f'{name}: ncks failed ({(err.stderr or "").strip()[-300:]}); '
+                                      f'delivering it UNPRUNED')
+            if stream == 'plevel' and p_level is not None:
+                try:
+                    with h5netcdf.File(file_path, 'a') as f:
+                        f.attrs.update(plevel_provenance(p_level))
+                except Exception as err:  # never lose the file over its label
+                    _stream_alert(f'{name}: could not stamp the p-level provenance attributes ({err!r})')
+    return [f for f in files if f not in withheld]
+
+
+_NAME_TIME_RE = re.compile(r'_d\d{2}_(\d{4}-\d{2}-\d{2})_(\d{2})[:_](\d{2})[:_](\d{2})')
+
+
+def drop_end_frame_files(out_files, effective_end):
+    """
+    Remove from each (type, domain) group the file WRF opened AT `effective_end` for the run's final
+    frame -- the one-frame "deceptive partial day" a midnight-ending run leaves, which the next chunk
+    rewrites -- matched by the time in its name (either spelling).
+
+    This replaced "skip the newest file of every group", which silently dropped a COMPLETE day from
+    any stream that has no such end file (review plev-autoruns-plan-1). wrfxtrm is exempt: its file
+    at the end time holds the finished last day's statistics.
+    """
+    target = effective_end.strftime('%Y-%m-%d_%H_%M_%S')
+    kept = {}
+    for grp, file_paths in out_files.items():
+        if grp[0] == 'wrfxtrm':
+            kept[grp] = list(file_paths)
+            continue
+        paths = []
+        for file_path in file_paths:
+            match = _NAME_TIME_RE.search(os.path.basename(file_path))
+            if match is None or '_'.join(match.groups()) != target:
+                paths.append(file_path)
+        kept[grp] = paths
+    return kept
 
 
 def end_frame_min_files(effective_end, upload_end_frame: bool) -> int:

@@ -23,10 +23,6 @@ from upload_namelists import upload_wrfrst, cleanup_prior_wrfrst, parse_wrfrst_t
 
 
 
-# out_files_glob = {'wrfout': 'wrfout_d*',
-#                   'zlevel': 'wrfzlevels_d*',
-#                   'summ': 'wrfxtrm_d*',
-#                   }
 
 ###########################################
 ### Functions
@@ -44,9 +40,9 @@ def deliver_output_files(files, run_path, rename_dict, name, out_path, final=Fal
         return
     if out_path is None and params.output_hook is None:
         return
-    if params.output_variables:
-        print('- wrfout variables will be filtered based on the output_variables.')
-        utils.filter_variables(files, params.output_variables)
+    # Each stream is pruned to its OWN [time_control.<file>] output_variables; a stream with no list
+    # is delivered as WRF wrote it. Not gated on wrfout having a list: a p-level-only prune must run.
+    files = utils.filter_output_files(files)
     files = utils.rename_files(files, rename_dict)
     if out_path is not None:
         utils.ul_output_files(files, run_path, name, out_path, params.config_path)
@@ -56,15 +52,19 @@ def deliver_output_files(files, run_path, rename_dict, name, out_path, final=Fal
 
 def post_run_files(run_path, effective_end):
     """
-    The output files the post-run upload takes: everything, minus the newest wrfout per (type, domain)
-    when the run ends exactly at midnight -- that single-frame file is a "deceptive partial day" (same
-    name pattern as a new day file, one rollover frame) that the next chunk / next week's job rewrites,
-    and may write first. ``params.upload_end_frame`` takes it anyway: a single-stage forecast's last
-    lead lives in it and nothing will ever rewrite it. A function so the wiring is testable without wrf.exe.
+    The output files the post-run upload takes: everything, minus -- when the run ends exactly at
+    midnight -- each stream's file WRF opened AT the end time for the final frame. That single-frame
+    file is a "deceptive partial day" (same name pattern as a new day file, one rollover frame) that
+    the next chunk / next week's job rewrites, and may write first. It is matched by the time in its
+    name, not as "the newest file", so a stream that has no such end file loses nothing
+    (utils.drop_end_frame_files). ``params.upload_end_frame`` takes it anyway: a single-stage
+    forecast's last lead lives in it and nothing will ever rewrite it. A function so the wiring is
+    testable without wrf.exe.
     """
     files = utils.query_out_files(run_path, include_xtrm=True)
-    min_files = utils.end_frame_min_files(effective_end, params.upload_end_frame)
-    return utils.select_files_to_ul(files, min_files)
+    if utils.end_frame_min_files(effective_end, params.upload_end_frame):
+        files = utils.drop_end_frame_files(files, effective_end)
+    return utils.select_files_to_ul(files, 0)
 
 
 def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
@@ -80,8 +80,8 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
     # This deliberately does NOT reach wrfrst. Restart files bypass rename_files entirely (they
     # go via upload_wrfrst) and must round-trip back into run_path under exactly the name wrf.exe
     # reconstructs for itself, so renaming them would break the chunk handoff. rename_files only
-    # ever receives query_out_files output, which prefix-filters to wrfout_d/wrfxtrm_d/
-    # wrfzlevels_d, so a wrfrst cannot reach it regardless of what this dict contains.
+    # ever receives query_out_files output, which prefix-filters to the output streams
+    # (defaults.OUTPUT_STREAMS), so a wrfrst cannot reach it regardless of what this dict contains.
     rename_dict = {**rename_dict, ':': '_'}
 
     if params.is_remote_output:
@@ -117,7 +117,7 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
 
     check = p.poll()
     while check is None:
-        # Glob mode (out_files=None) — accept any wrfout/wrfxtrm/wrfzlevels file regardless of
+        # Glob mode (out_files=None) — accept any output-stream file regardless of
         # timestamp. Necessary for restart chunks where WRF's first wrfout is offset from
         # chunk_start by history_interval (e.g. a Feb13 chunk's first file is named ..._03:00:00).
         # include_xtrm=True: pick up wrfxtrm progressively during the run instead of holding
