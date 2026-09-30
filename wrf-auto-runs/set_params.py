@@ -555,32 +555,6 @@ def set_nml_params(domains=None):
     wps_share['interval_seconds'] = interval_hours * 60 * 60
     wrf_tc['interval_seconds'] = interval_hours * 60 * 60
 
-    ## FDDA defaults: apply per-domain where grid_fdda > 0, scalars as-is
-    if 'grid_fdda' in fdda:
-        grid_fdda = broadcast_field(fdda['grid_fdda'], n_domains, domains, old_n_domains)
-        fdda['grid_fdda'] = grid_fdda
-        nudge_mask = [v > 0 for v in grid_fdda]
-
-        # Per-domain defaults (masked by grid_fdda)
-        for key, default_val in defaults.FDDA_PER_DOMAIN_DEFAULTS.items():
-            if key not in fdda:
-                fdda[key] = [default_val if on else 0 for on in nudge_mask]
-
-        # Scalar defaults
-        fdda.setdefault('gfdda_inname', 'wrffdda_d<domain>')
-
-        # Set runtime values for gfdda_interval_m and gfdda_end_h if not user-specified
-        if 'gfdda_interval_m' not in params.file.get('fdda', {}):
-            fdda['gfdda_interval_m'] = [interval_hours * 60 if on else 0 for on in nudge_mask]
-        if 'gfdda_end_h' not in params.file.get('fdda', {}):
-            duration_hours = int((end_date - start_date).total_hours())
-            fdda['gfdda_end_h'] = [duration_hours if on else 0 for on in nudge_mask]
-
-        # Broadcast any remaining user-specified per-domain fdda fields
-        for field in defaults.FDDA_PER_DOMAIN_FIELDS:
-            if field in fdda and field != 'grid_fdda':
-                fdda[field] = broadcast_field(fdda[field], n_domains, domains, old_n_domains)
-
     # History intervals - list per domain (was dict keyed by domain number)
     history_intervals_raw = params.file['time_control']['history_file']['interval_hours']
     history_intervals = [int(hi * 60) for hi in utils.to_list(history_intervals_raw)]
@@ -613,6 +587,48 @@ def set_nml_params(domains=None):
         # Single-stage / preprocess-only: pull start back by history_begin so WRF actually
         # integrates the spin-up period; history_begin_h then suppresses wrfout for that span.
         new_start_date = start_date.subtract(minutes=history_begin)
+
+    ## FDDA (grid / spectral nudging): per-domain defaults where grid_fdda > 0, scalars as-is.
+    ## Placed AFTER new_start_date: gfdda_end_h is counted from WRF's xtime origin, the simulation start
+    ## (spin-up included), to the RUN's final end -- never from start_date or a chunk start (utils,
+    ## "Spectral / analysis nudging window"). A restart chunk's origin comes from its wrfrst and is set
+    ## again in apply_restart_namelist; the value here is what a cold start or a single stage runs with.
+    if 'grid_fdda' in fdda:
+        grid_fdda = broadcast_field(fdda['grid_fdda'], n_domains, domains, old_n_domains)
+        fdda['grid_fdda'] = grid_fdda
+        nudge_mask = [v > 0 for v in grid_fdda]
+
+        # Per-domain defaults (masked by grid_fdda)
+        for key, default_val in defaults.FDDA_PER_DOMAIN_DEFAULTS.items():
+            if key not in fdda:
+                fdda[key] = [default_val if on else 0 for on in nudge_mask]
+
+        # Scalar defaults
+        fdda.setdefault('gfdda_inname', 'wrffdda_d<domain>')
+
+        user_fdda = params.file.get('fdda', {})
+        if params._chunked_mode_active:
+            origin, run_end = params.run_window()      # the whole run: params.file holds the chunk now
+        else:
+            origin, run_end = new_start_date, end_date  # single stage: WRF starts here, spin-up included
+        if 'gfdda_interval_m' not in user_fdda:
+            fdda['gfdda_interval_m'] = [interval_hours * 60 if on else 0 for on in nudge_mask]
+        if 'gfdda_end_h' not in user_fdda:
+            end_h = utils.nudging_end_hours(origin, run_end)
+            fdda['gfdda_end_h'] = [end_h if on else 0 for on in nudge_mask]
+
+        # A list shorter than the configured domains means 0 on the rest -- WRF's Registry default for an
+        # unlisted domain (xwavenum/ywavenum/gph: configs write [3, 0] on 4-domain setups). Pad, never refuse.
+        for field in ('xwavenum', 'ywavenum', 'gph'):
+            if isinstance(fdda.get(field), list) and len(fdda[field]) < old_n_domains:
+                fdda[field] = list(fdda[field]) + [0] * (old_n_domains - len(fdda[field]))
+
+        # Broadcast any remaining user-specified per-domain fdda fields
+        for field in defaults.FDDA_PER_DOMAIN_FIELDS:
+            if field in fdda and field != 'grid_fdda':
+                fdda[field] = broadcast_field(fdda[field], n_domains, domains, old_n_domains)
+
+        _check_nudging_config(fdda, grid_fdda, interval_hours, origin, run_end)
 
     interval = pendulum.interval(start_date, end_date.subtract(minutes=1))
 
@@ -830,6 +846,79 @@ def set_ndown_params(interval_seconds):
         wrf_nml.write(nml_file)
 
 
+def _check_nudging_config(fdda, grid_fdda, interval_hours, origin, run_end):
+    """
+    Refusals for a nudged run (review nudging-fix-plan-1). Each is a way WRF would nudge for less than
+    the whole run, or nudge nothing useful, without saying so:
+      - time_control keys that move WRF's clock: reset_simulation_start re-bases xtime on the restart
+        time; run_days/hours/minutes/seconds override end_* so WRF can run past the window;
+      - spectral nudging (grid_fdda = 2) without xwavenum/ywavenum: WRF's default 0 keeps only the
+        domain mean (spectral_nudging_filter, nh = 1 + 2*nwave);
+      - a pinned gfdda_interval_m that is not the input interval: WRF reads the analyses one input
+        interval apart, whatever this says;
+      - a pinned gfdda_end_h that stops before the run ends (ruled 2026-09-30: nudged throughout).
+    """
+    nudged = [d for d, g in enumerate(grid_fdda) if g > 0]
+    if not nudged:
+        return
+    tc = params.file['time_control']
+    for key in ('reset_simulation_start', 'run_days', 'run_hours', 'run_minutes', 'run_seconds'):
+        if tc.get(key):
+            raise ValueError(f'[time_control] {key} = {tc[key]!r} on a nudged run moves WRF\'s clock away from '
+                             'the one the nudging window is measured on; remove it (the run window is '
+                             'start_date/end_date and begin_hours).')
+    for d in nudged:
+        if grid_fdda[d] == 2:
+            for key in ('xwavenum', 'ywavenum'):
+                val = utils.to_list(fdda.get(key, [0]))
+                if (val[d] if d < len(val) else val[-1]) in (None, 0):
+                    raise ValueError(f'[fdda] grid_fdda = 2 (spectral nudging) on domain {d + 1} needs {key}: '
+                                     'WRF\'s default 0 nudges only the domain mean.')
+    user = params.file.get('fdda', {})
+    if 'gfdda_interval_m' in user:
+        bad = [(d + 1, fdda['gfdda_interval_m'][d]) for d in nudged
+               if fdda['gfdda_interval_m'][d] != interval_hours * 60]
+        if bad:
+            raise ValueError(f'[fdda] gfdda_interval_m {bad} (domain, minutes) is not the input interval '
+                             f'({interval_hours * 60} min); omit it to derive it.')
+    if 'gfdda_end_h' in user:
+        need = utils.nudging_end_hours(origin, run_end)
+        short = [(d + 1, fdda['gfdda_end_h'][d]) for d in nudged if fdda['gfdda_end_h'][d] < need]
+        if short:
+            raise ValueError(f'[fdda] gfdda_end_h {short} (domain, hours) stops nudging before the run ends: it '
+                             f'is counted from the simulation start {utils._wall(origin)} (spin-up included), '
+                             f'so the whole run needs >= {need}. Omit it to derive it.')
+
+
+def _restart_nudging_window(nml, restart_time):
+    """
+    On a restart, WRF's xtime origin is the wrfrst's SIMULATION_START_DATE, which need not be this
+    config's start (a run seeded from another run's restart, e.g. S1 from C1). Re-derive gfdda_end_h
+    from it, per nudged domain -- or, when the config pins gfdda_end_h, VALIDATE the pin (never
+    overwrite it; review nudging-fix-plan-1).
+    """
+    fdda = nml.get('fdda')
+    if not fdda:
+        return
+    domains = utils.nudged_domains(fdda)
+    if not domains:
+        return
+    n = len(utils.to_list(fdda['grid_fdda']))
+    end_h = list(utils.to_list(fdda.get('gfdda_end_h', 0)))
+    end_h += [end_h[-1]] * (n - len(end_h))
+    pinned = 'gfdda_end_h' in params.file.get('fdda', {})
+    run_end = params.run_window()[1]
+    for d in domains:
+        origin = utils.simulation_start_of(utils.wrfrst_path(params.run_path, d, restart_time))
+        need = utils.nudging_end_hours(origin, run_end)
+        if not pinned:
+            end_h[d - 1] = need
+        elif end_h[d - 1] < need:
+            raise ValueError(f'[fdda] gfdda_end_h = {end_h[d - 1]} on domain {d} stops nudging before the run ends: '
+                             f'this restart\'s simulation start is {origin}, so it needs >= {need}.')
+    fdda['gfdda_end_h'] = end_h
+
+
 def apply_restart_namelist(restart_time, restart_interval_minutes, end_date_override=None):
     """In-place edit of run_path/namelist.input to enable a restart run.
 
@@ -854,6 +943,7 @@ def apply_restart_namelist(restart_time, restart_interval_minutes, end_date_over
         nml['time_control']['start_hour']   = [restart_time.hour]   * n_domains
         nml['time_control']['start_minute'] = [restart_time.minute] * n_domains
         nml['time_control']['start_second'] = [restart_time.second] * n_domains
+        _restart_nudging_window(nml, restart_time)
     nml['time_control']['restart_interval'] = restart_interval_minutes
     nml['time_control']['override_restart_timers'] = True
     # write_hist_at_0h_rst forces wrf.exe to write a history frame at chunk_start on restart.

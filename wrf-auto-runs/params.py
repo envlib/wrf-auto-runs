@@ -9,6 +9,8 @@ import tomllib
 import os
 import pathlib
 
+import pendulum
+
 from defaults import GEOGRID_ARRAY_FIELDS as geogrid_array_fields
 from defaults import GEOGRID_SINGLE_FIELDS as geogrid_single_fields
 
@@ -158,6 +160,36 @@ if restart_interval_days is not None:
 # single-stage / preprocess-only modes — chunked mode handles spin-up via chunk windows).
 _original_begin_hours = int(file['time_control']['history_file']['begin_hours'])
 _chunked_mode_active = False
+_run_window_snapshot = None
+
+
+def _config_window(time_control):
+    """(real WRF start incl. the spin-up, final end) as `time_control` states them, naive."""
+    start = pendulum.parse(time_control['start_date']).naive()
+    if 'end_date' in time_control:
+        end = pendulum.parse(time_control['end_date']).naive()
+    elif 'duration_hours' in time_control:
+        end = start.add(hours=time_control['duration_hours'])
+    else:
+        raise ValueError('parameters.toml [time_control] must specify end_date or duration_hours')
+    return start.subtract(hours=int(time_control['history_file']['begin_hours'])), end
+
+
+def run_window():
+    """
+    (real WRF start including the spin-up, final end) of the WHOLE run as configured -- never the
+    current chunk's. set_chunk_dates overwrites start_date/end_date/begin_hours in `file` for each
+    chunk, so it snapshots the configured window first; until then (single-stage, or before the first
+    chunk) it is derived from `file` at CALL time, which is what the test fixtures drive.
+    The nudging window (gfdda_end_h) is measured to this end: a chunk end would stop nudging at every
+    seam, which is the defect of 2026-09-29 (wrf-model-eval OPEN_WORK, the nudging item).
+    """
+    if _run_window_snapshot is not None:
+        return _run_window_snapshot
+    if _chunked_mode_active:  # the chunk loop always snapshots first; without it `file` holds the CHUNK window
+        raise RuntimeError('params.run_window(): chunked mode is active but no run window was snapshotted -- '
+                           'set_chunk_dates is the only supported way into chunked mode')
+    return _config_window(file['time_control'])
 
 
 def set_chunk_dates(chunk_start, chunk_end, remaining_begin_hours):
@@ -172,7 +204,9 @@ def set_chunk_dates(chunk_start, chunk_end, remaining_begin_hours):
     Becomes the namelist's history_begin_h_<n>, suppressing wrfout for chunks that
     fall inside the spin-up window.
     """
-    global _chunked_mode_active
+    global _chunked_mode_active, _run_window_snapshot
+    if _run_window_snapshot is None:  # BEFORE the overwrite below: the whole run's window, not the chunk's
+        _run_window_snapshot = _config_window(file['time_control'])
     file['time_control']['start_date'] = chunk_start.strftime('%Y-%m-%d %H:%M:%S')
     file['time_control']['end_date'] = chunk_end.strftime('%Y-%m-%d %H:%M:%S')
     file['time_control']['history_file']['begin_hours'] = int(remaining_begin_hours)

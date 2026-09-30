@@ -24,13 +24,13 @@ from `parameters.toml` (`tracer_opt`/`[wvt]`) and is image-agnostic — pick the
 
 | Variant | Compiler | Pipeline image | Build context | Base (wrf-docker-builds) |
 |---|---|---|---|---|
-| no-WVT | gfortran | `wrf-auto-runs:2.8` (also the root `Dockerfile`/`docker-compose.yml`, same tag — bump both) | `gfortran_wrf/` ✦ | `wrf-wps-debian:1.2` |
-| no-WVT | Intel | `wrf-auto-runs-intel:1.4` | `intel_wrf/` | `wrf-wps-intel-ubuntu:1.0` |
-| single-region WVT | gfortran | `wrf-auto-runs-wvt:1.9` | `gfortran_wvt/` | `wrf-wps-wvt-debian:1.3` |
-| single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.1` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.0` ✦ |
-| **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.1` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.1` ✦ |
-| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.13`** (2.13 = pressure-level output + per-file `output_variables`, on base 2.7 whose init-time p/z-level diagnostics use dry θ; 2.12 = 2.11 + nested-domain SST updates; 2.11 = pipeline-only over base 2.6: intermediate input, output hook, `upload_end_frame`) | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.7` |
-| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.6` (the 2.13 pipeline on base avx512 1.3; 1.5 = the 2.12 pipeline: + the `SENTRY_DSN` env override and nested-domain SST updates; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.3` |
+| no-WVT | gfortran | `wrf-auto-runs:2.9` (also the root `Dockerfile`/`docker-compose.yml`, same tag — bump both) | `gfortran_wrf/` ✦ | `wrf-wps-debian:1.2` |
+| no-WVT | Intel | `wrf-auto-runs-intel:1.5` | `intel_wrf/` | `wrf-wps-intel-ubuntu:1.0` |
+| single-region WVT | gfortran | `wrf-auto-runs-wvt:1.10` | `gfortran_wvt/` | `wrf-wps-wvt-debian:1.3` |
+| single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.2` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.0` ✦ |
+| **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.2` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.1` ✦ |
+| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.14`** (2.14 = nudging on for the whole run: `gfdda_end_h` from the simulation start, spin-up and restarts included, see the `[fdda]` bullet; 2.13 = pressure-level output + per-file `output_variables`, on base 2.7 whose init-time p/z-level diagnostics use dry θ; 2.12 = 2.11 + nested-domain SST updates; 2.11 = pipeline-only over base 2.6: intermediate input, output hook, `upload_end_frame`) | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.7` |
+| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.7` (the 2.14 pipeline on base avx512 1.3; 1.6 = the 2.13 pipeline; 1.5 = the 2.12 pipeline: + the `SENTRY_DSN` env override and nested-domain SST updates; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.3` |
 | reference (WRF 4.3.3) | gfortran | `wrf-auto-runs-wvt-ref:1.2` | `gfortran_wvt_ref/` | `wrf-wps-wvt-ref-debian:1.0` |
 
 ✦ = **new scaffolding — build + validate on demand** (gfortran multi-region is the higher-risk
@@ -248,6 +248,7 @@ All Python modules live under `wrf-auto-runs/`.
 - **`[time_control]`** — Simulation period and output config. **`start_date` is the desired output start** (= timestamp of the first wrfout frame), not the WRF integration start. The integration begins `[time_control.history_file].begin_hours` BEFORE `start_date`; that span is spin-up and produces no output. `duration_hours` is measured from `start_date` (i.e. covers only the output window, not the spin-up). Any key not in `TIME_CONTROL_PIPELINE_KEYS` passes through directly to WRF `&time_control`.
 - **`[physics]`** / **`[dynamics]`** — Override defaults; all keys pass to their respective WRF namelist sections.
 - **`[fdda]`**, **`[bdy_control]`**, **`[grib2]`**, **`[namelist_quilt]`**, **`[diags]`** — Direct WRF namelist sections. All keys pass through via `apply_overrides()`.
+- **`[fdda]` nudging window (2.14 / avx512 1.7):** `gfdda_end_h` = hours from WRF's SIMULATION start (`xtime`'s origin: the real start incl. spin-up; on a restart the wrfrst's `SIMULATION_START_DATE`, `set_params._restart_nudging_window`) to `params.run_window()`'s end — the whole run, snapshotted in `set_chunk_dates` before it overwrites the dates. Before 2.14 it was the chunk length / `end − start_date`, so chunked runs were unnudged after chunk 1 and single-stage runs lost `begin_hours` at the end (wrf-model-eval OPEN_WORK, the nudging item). Guards: refusals in `set_params._check_nudging_config`, `utils.preflight_nudging` at the top of `monitor_wrf`, `utils.check_wrfout_nudging` at delivery. Tests: `tests/test_nudging_window.py` (20 mutants killed). The frozen `gfortran_wvt_ref/pipeline` keeps the old derivation — pin `gfdda_end_h` there (its README).
 
 ## Domain Subsetting
 

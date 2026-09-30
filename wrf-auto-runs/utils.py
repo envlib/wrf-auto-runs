@@ -5,7 +5,9 @@ Created on Tue Sep 23 15:03:38 2025
 
 @author: mike
 """
+import datetime
 import fnmatch
+import math
 import os
 import shlex
 import signal
@@ -13,10 +15,12 @@ import subprocess
 import pathlib
 import re
 
+import f90nml
 import h5netcdf
 import numpy as np
 import pendulum
 import pyproj
+import scipy.io
 import sentry_sdk
 
 import params
@@ -546,6 +550,149 @@ def plevel_provenance(p_level):
     }
 
 
+## ---- Spectral / analysis nudging window --------------------------------------------------------
+## WRF stops grid nudging once xtime > gfdda_end_h*60 (module_fdda_spnudging.F:202-205,
+## module_fdda_psufddagd.F:237), and xtime is minutes since the SIMULATION start -- SIMULATION_START_DATE,
+## carried through every restart (frame/module_domain.F:2420, share/input_wrf.F:338-392). Measured from a
+## chunk start (every chunk after the first unnudged) or from start_date (the spin-up left out), nudging
+## stops early; both happened, 2026-02-26 -> 2026-09-30 (wrf-model-eval OPEN_WORK, the nudging item).
+## ⚠ WRF's Registry calls BOTH this and the stream alarms "from start of run", but alarms count from the
+## CLOCK start (the restart time, module_domain.F domain_alarm_create) and nudging from the SIMULATION start.
+
+WRF_DATE_FORMAT = '%Y-%m-%d_%H:%M:%S'
+
+
+def _wall(dt):
+    """A naive datetime.datetime for pendulum/datetime, aware or not (all times here are UTC)."""
+    return datetime.datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+
+
+def nudging_end_hours(simulation_start, run_end):
+    """gfdda_end_h that keeps nudging on through `run_end`: whole hours from WRF's xtime origin (the
+    SIMULATION start, spin-up included) to the run's final end, rounded UP. Refuses an empty window."""
+    secs = (_wall(run_end) - _wall(simulation_start)).total_seconds()
+    if secs <= 0:
+        raise ValueError(f'nudging window: run end {_wall(run_end)} is not after the simulation start '
+                         f'{_wall(simulation_start)}')
+    return int(math.ceil(secs / 3600))
+
+
+def wrfrst_path(run_path, domain, restart_time):
+    """The wrfrst wrf.exe reads for `restart_time` -- WRF's own colon spelling (never renamed, see monitor_wrf)."""
+    return pathlib.Path(run_path) / f'wrfrst_d{int(domain):02d}_{_wall(restart_time).strftime(WRF_DATE_FORMAT)}'
+
+
+def _wrf_global_attr(path, name):
+    """One global attribute of a WRF netCDF file. h5netcdf reads the netCDF-4 these builds write; a
+    classic-format file (signature error) falls back to scipy. None when the attribute is absent."""
+    try:
+        with h5netcdf.File(path, 'r') as f:
+            val = f.attrs.get(name)
+    except OSError:
+        with scipy.io.netcdf_file(path, 'r', mmap=False) as f:
+            val = getattr(f, name, None)
+    if isinstance(val, bytes):
+        val = val.decode()
+    if isinstance(val, np.ndarray) and val.size == 1:
+        val = val.item()
+    return val
+
+
+def simulation_start_of(path):
+    """WRF's xtime origin as recorded in a wrfrst/wrfout. Absent -> refuse: WRF would fall back to the
+    namelist start (input_wrf.F:370-390), and a guess here is exactly how a window ends early."""
+    val = _wrf_global_attr(path, 'SIMULATION_START_DATE')
+    if val is None:
+        raise ValueError(f'{pathlib.Path(path).name}: no SIMULATION_START_DATE attribute -- cannot place the '
+                         f'nudging window, refusing to guess')
+    return datetime.datetime.strptime(str(val).strip()[:19], WRF_DATE_FORMAT)
+
+
+def nudged_domains(fdda_nml):
+    """1-based ids of the domains with grid_fdda > 0. A single-domain namelist reads grid_fdda back as a
+    scalar (f90nml), hence to_list (review nudging-fix-plan-1: the unwrapped form crashed C1 restarts)."""
+    return [d + 1 for d, g in enumerate(to_list(fdda_nml.get('grid_fdda', 0))) if g and g > 0]
+
+
+def _nml_time(time_control, which):
+    def first(key, default=0):
+        return int(to_list(time_control.get(f'{which}_{key}', default))[0])
+    return datetime.datetime(first('year'), first('month'), first('day'), first('hour'), first('minute'),
+                             first('second'))
+
+
+def preflight_nudging(run_path):
+    """
+    Refuse to start wrf.exe unless, for every nudged domain, the REALISED namelist's gfdda_end_h
+    reaches this run's end measured from WRF's own xtime origin: the wrfrst's SIMULATION_START_DATE on
+    a restart, the namelist start otherwise. Reads what wrf.exe will read (run_path/namelist.input and
+    the wrfrst), not what the pipeline intended -- so it holds whatever path produced the namelist.
+    Prints the window as dates every time.
+    """
+    run_path = pathlib.Path(run_path)
+    nml = f90nml.read(run_path / 'namelist.input')
+    fdda = nml.get('fdda', {})
+    domains = nudged_domains(fdda)
+    if not domains:
+        return
+    tc = nml['time_control']
+    if tc.get('reset_simulation_start', False):
+        raise ValueError('nudging pre-flight: reset_simulation_start moves WRF\'s xtime origin; refused on a nudged run')
+    start, end = _nml_time(tc, 'start'), _nml_time(tc, 'end')
+    restart = bool(tc.get('restart', False))
+    end_h = to_list(fdda.get('gfdda_end_h', 0))
+    problems = []
+    for d in domains:
+        origin = simulation_start_of(wrfrst_path(run_path, d, start)) if restart else start
+        hours = end_h[d - 1] if d - 1 < len(end_h) else 0      # WRF's default for an unlisted domain is 0
+        stop = origin + datetime.timedelta(hours=hours)
+        print(f'-- nudging d{d:02d}: xtime origin {origin}, gfdda_end_h {hours} -> nudged until {stop} '
+              f'(this run ends {end})')
+        if stop < end:
+            problems.append(f'd{d:02d} stops nudging at {stop}, {(end - stop).total_seconds() / 3600:g} h '
+                            f'before this run ends ({end}); origin {origin}')
+    if problems:
+        raise ValueError('nudging pre-flight refused wrf.exe: ' + '; '.join(problems))
+
+
+def _wrf_nudging_record(file_path):
+    """(GRID_FDDA, GFDDA_END_H, IF_RAMPING, DTRAMP_MIN, XTIME array or None) of a WRF netCDF file; netCDF-4 via
+    h5netcdf, classic via scipy (the same fallback as _wrf_global_attr)."""
+    keys = ('GRID_FDDA', 'GFDDA_END_H', 'IF_RAMPING', 'DTRAMP_MIN')
+    try:
+        with h5netcdf.File(file_path, 'r') as f:
+            vals = [f.attrs.get(k) for k in keys]
+            xtime = np.asarray(f.variables['XTIME'][:], dtype='f8') if 'XTIME' in f.variables else None
+    except OSError:
+        with scipy.io.netcdf_file(file_path, 'r', mmap=False) as f:
+            vals = [getattr(f, k, None) for k in keys]
+            xtime = np.asarray(f.variables['XTIME'][:], dtype='f8').copy() if 'XTIME' in f.variables else None
+    first = lambda v, default: default if v is None else np.ravel(v)[0]
+    return (int(first(vals[0], 0)), float(first(vals[1], 0)), int(first(vals[2], 0)), float(first(vals[3], 0.0)),
+            xtime)
+
+
+def check_wrfout_nudging(file_path):
+    """
+    WRF's own record, read at delivery: a wrfout of a nudged domain (GRID_FDDA > 0) whose XTIME passes
+    GFDDA_END_H*60 (+ DTRAMP_MIN when IF_RAMPING = 1 AND DTRAMP_MIN > 0 -- WRF's own condition,
+    module_fdda_spnudging.F:202-203) holds unnudged frames. Returns a message or None; never raises (a file
+    is never withheld over its label). Independent of how gfdda_end_h was derived.
+    """
+    try:
+        grid_fdda, end_h, if_ramping, dtramp_min, xtime = _wrf_nudging_record(file_path)
+        if grid_fdda <= 0 or xtime is None:
+            return None
+        end_min = end_h * 60.0 + (abs(dtramp_min) if if_ramping == 1 and dtramp_min > 0 else 0.0)
+        xtime_max = float(np.max(xtime))
+    except Exception as err:
+        return f'{os.path.basename(file_path)}: nudging record unreadable ({err!r})'
+    if xtime_max > end_min:
+        return (f'{os.path.basename(file_path)}: UNNUDGED frames -- XTIME reaches {xtime_max:g} min but '
+                f'nudging stopped at {end_min:g} min (GFDDA_END_H*60)')
+    return None
+
+
 def _ncks_prune(file_path, names):
     """Subset one file to `names` in place: `ncks -O -4 -L 1 -v ...` (the same command, and so the same
     compression, for every stream)."""
@@ -579,6 +726,7 @@ def _history_keep_list(variables):
 
 
 _unreadable_alerted = set()
+_nudging_alerted = set()
 
 
 def filter_output_files(files):
@@ -606,6 +754,16 @@ def filter_output_files(files):
     requests = {stream: resolve_stream_variables(params.file, stream) for stream in by_stream}
     p_level = resolve_p_level_file(params.file) if 'plevel' in by_stream else None
     withheld = set()
+
+    # WRF's own record of the nudging window, per wrfout: alert (never withhold) on unnudged frames.
+    for file_path in by_stream.get('history', []):
+        message = check_wrfout_nudging(file_path)
+        key = (file_path, os.path.getmtime(file_path) if os.path.exists(file_path) else None)
+        if message is not None and key not in _nudging_alerted:
+            _nudging_alerted.add(key)
+            print(f'filter_output_files: ERROR {message}')
+            if params.is_sentry:
+                sentry_sdk.capture_message(message, level='error')
 
     for stream, spec in defaults.OUTPUT_STREAMS.items():
         if spec['strict'] or not requests.get(stream):

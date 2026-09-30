@@ -278,7 +278,11 @@ feedback = 0                            # One-way (0) or two-way (1) nesting
 #
 # Auto-populated defaults (per-domain, only where grid_fdda > 0):
 #   gfdda_interval_m = interval_hours * 60   Derived from ERA5 input frequency
-#   gfdda_end_h = simulation duration         Nudge for entire run
+#   gfdda_end_h = whole run                   Hours from the SIMULATION start (spin-up included) to the
+#                                             run's final end -- chunked runs included: a restart takes
+#                                             its start from the wrfrst's SIMULATION_START_DATE. WRF
+#                                             measures it from there (xtime), not from start_date or a
+#                                             chunk start. Nudging is on for the entire integration.
 #   fgdt = 0                                  Apply every time step
 #   if_no_pbl_nudging_uv = 1                  Don't nudge wind in PBL
 #   if_no_pbl_nudging_t = 1                   Don't nudge temperature in PBL
@@ -286,7 +290,13 @@ feedback = 0                            # One-way (0) or two-way (1) nesting
 #   if_no_pbl_nudging_q = 1                   Don't nudge moisture in PBL
 #   guv = 0.0003                              Nudging coefficient for wind
 #   gt = 0.0003                               Nudging coefficient for temperature
-#   gq = 0.0003                               Nudging coefficient for moisture
+#   gq = 0                                    Moisture NOT nudged (it would break WVT tracer ratios)
+#
+# Refused on a nudged run: a pinned gfdda_end_h that stops before the run ends; a pinned
+# gfdda_interval_m other than interval_hours * 60; grid_fdda = 2 without xwavenum / ywavenum (WRF's
+# default 0 nudges only the domain mean); [time_control] reset_simulation_start or run_days/hours/
+# minutes/seconds (they move WRF's clock). wrf.exe is not started unless the realised namelist
+# nudges through the end of the run (utils.preflight_nudging).
 # =============================================================================
 
 # [fdda]

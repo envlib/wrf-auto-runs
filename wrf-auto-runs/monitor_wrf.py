@@ -84,6 +84,10 @@ def monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=None):
     # (defaults.OUTPUT_STREAMS), so a wrfrst cannot reach it regardless of what this dict contains.
     rename_dict = {**rename_dict, ':': '_'}
 
+    # Before anything else: wrf.exe never starts with a nudging window that ends before this run does
+    # (every wrf.exe launch, single-stage or chunked, comes through here).
+    utils.preflight_nudging(params.run_path)
+
     if params.is_remote_output:
         remote = copy.deepcopy(params.file['remote']['output'])
 

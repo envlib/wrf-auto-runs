@@ -92,30 +92,19 @@ def _build_rename_dict(ndown_check, domains):
     return rename_dict
 
 
-def _read_sim_window():
-    """Read original simulation start_date/end_date from parameters.toml (before any chunk mutation)."""
-    sim_start = pendulum.parse(params.file['time_control']['start_date']).naive()
-    if 'end_date' in params.file['time_control']:
-        sim_end = pendulum.parse(params.file['time_control']['end_date']).naive()
-    elif 'duration_hours' in params.file['time_control']:
-        sim_end = sim_start.add(hours=params.file['time_control']['duration_hours'])
-    else:
-        raise ValueError('parameters.toml [time_control] must specify end_date or duration_hours')
-    return sim_start, sim_end
-
-
 def run_chunked_pipeline(run_uuid):
     """Phase 3 unified per-chunk mode: preprocess + WRF for one chunk per iteration.
 
     Loops chunks internally if stop_after_upload=false. Exits after one chunk if true
     (caller — typically a SLURM-submitted container — handles repeated invocations).
     """
-    sim_start_user, sim_end = _read_sim_window()
     # Real WRF start is begin_hours before the user's desired output start: WRF integrates
     # the spin-up period and history_begin_h_<n> suppresses wrfout for that span. Chunk math
     # operates on the real WRF window so spin-up gets its own chunks instead of being
-    # silently bolted onto chunk 1.
-    sim_start = sim_start_user.subtract(hours=params._original_begin_hours)
+    # silently bolted onto chunk 1. params.run_window is the ONE source of that window: the
+    # nudging window (set_params) is measured over the same span.
+    sim_start, sim_end = params.run_window()
+    sim_start_user = sim_start.add(hours=params._original_begin_hours)
     if params._original_begin_hours > 0:
         print(f'-- simulation window: {sim_start} → {sim_end} '
               f'(incl. {params._original_begin_hours}h spin-up before user start_date {sim_start_user})')

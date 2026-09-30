@@ -142,7 +142,7 @@ DYNAMICS_DEFAULTS = {
 
 # Per-domain defaults (masked by grid_fdda: non-zero only where nudging is on)
 FDDA_PER_DOMAIN_DEFAULTS = {
-    'gfdda_end_h': 0,            # Populated at runtime from simulation duration
+    'gfdda_end_h': 0,            # Populated at runtime: simulation start (spin-up included) -> run end
     'gfdda_interval_m': 0,       # Populated at runtime from interval_hours
     'fgdt': 0,                   # Apply nudging every time step
     'if_no_pbl_nudging_uv': 1,   # Don't nudge wind in PBL
@@ -158,11 +158,12 @@ FDDA_PER_DOMAIN_DEFAULTS = {
 }
 
 # Per-domain fields in &fdda that need broadcasting/masking by grid_fdda
+# (max_domains in Registry.EM_COMMON; if_ramping, dtramp_min and ktrop are dimension 1 -- never broadcast)
 FDDA_PER_DOMAIN_FIELDS = {
     'grid_fdda', 'gfdda_end_h', 'gfdda_interval_m', 'fgdt',
     'if_no_pbl_nudging_uv', 'if_no_pbl_nudging_t',
     'if_no_pbl_nudging_ph', 'if_no_pbl_nudging_q',
-    'guv', 'gt', 'gq',
+    'guv', 'gt', 'gq', 'gph', 'xwavenum', 'ywavenum',
 }
 
 # ============================================================
