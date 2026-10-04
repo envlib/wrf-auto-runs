@@ -4,7 +4,7 @@ One `submit` script and one generic `chunk.sl` for every cluster. A project dir 
 cluster specifics live in a site file you keep outside this repo.
 
 ```
-submit --cluster <name> --site <site.toml> <project_dir> [--dry-run] [--uuid U] [--keep-scratch] [--max-jobs N]
+submit --cluster <name> --site <site.toml> <project_dir> [--dry-run] [--uuid U] [--job-name NAME] [--keep-scratch] [--max-jobs N]
 ```
 
 Run it on the login node. It needs only bash ≥ 4.4, awk, GNU date, `sbatch`, `squeue` and `scancel`; no Python.
@@ -49,8 +49,10 @@ Values must fit on one line and contain no `,`, because Apptainer splits `--env`
    `begin_hours` before `start_date`, and `end` may come from `duration_hours` (`end_date` wins when both are set,
    as in the pipeline). More than 60 jobs is refused unless you pass `--max-jobs N`, so a mistyped `end_date`
    cannot queue hundreds of jobs.
-4. **Refuses a uuid already queued or running** for you on this cluster (job name `wrf-<uuid>`). It cannot see
-   other clusters: queue a run on one cluster only.
+4. **Refuses a chain whose job name is already queued or running** for you on this cluster. The name is
+   `wrf-<uuid>` unless you pass `--job-name` (squeue shows only 8 characters by default, so a generator can pass
+   something short, as C1 passes `c1-<YYYY>`). The rollback cancels by the same name. It cannot see other clusters:
+   queue a run on one cluster only.
 5. **Writes a snapshot** `<project>/runs/<UTC time>-<cluster>/`, holding both tomls, a copy of `chunk.sl` and
    `job.env` (mode 600; the snapshot copies `parameters.toml`, credentials included). Every job reads the snapshot,
    so editing the project or updating this checkout never changes a chain that is already queued. Each submission

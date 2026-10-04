@@ -6,6 +6,8 @@
 #     submit --cluster hetzner --site site.toml path/to/project --dry-run  # print it, submit nothing
 #
 # Options:  --uuid U          run_uuid (default: parameters.toml's top-level run_uuid; one of the two is required)
+#           --job-name NAME   Slurm job name for every job of the chain (default wrf-<run_uuid>). The queue check and
+#                             the rollback both key on it. squeue shows only 8 characters by default, so keep it short.
 #           --keep-scratch    keep every job's scratch dir, even on success
 #           --max-jobs N      allow a chain of more than 60 jobs (a guard against a mistyped end_date)
 #           --dry-run         validate and print the plan; writes nothing, calls neither squeue nor sbatch
@@ -72,18 +74,19 @@ toml_kv() {
 toml_has_table() { grep -qE "^[[:space:]]*\[$1\][[:space:]]*(#.*)?$" "$2"; }
 
 # ---- Arguments ---------------------------------------------------------------
-CLUSTER="" SITE="" PROJECT="" UUID_ARG="" DRY_RUN=0 KEEP_SCRATCH="" MAX_JOBS=60
+CLUSTER="" SITE="" PROJECT="" UUID_ARG="" JOB_NAME_ARG="" DRY_RUN=0 KEEP_SCRATCH="" MAX_JOBS=60
 needs_value() { [ -n "${2:-}" ] || die "$1 needs a value"; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --cluster) needs_value "$@"; CLUSTER="$2"; shift 2 ;;
         --site) needs_value "$@"; SITE="$2"; shift 2 ;;
         --uuid) needs_value "$@"; UUID_ARG="$2"; shift 2 ;;
+        --job-name) needs_value "$@"; JOB_NAME_ARG="$2"; shift 2 ;;
         --max-jobs) needs_value "$@"; MAX_JOBS="$2"; shift 2
                     [[ "${MAX_JOBS}" =~ ^[0-9]+$ ]] || die "--max-jobs must be a whole number" ;;
         --dry-run) DRY_RUN=1; shift ;;
         --keep-scratch) KEEP_SCRATCH=1; shift ;;
-        -h|--help) sed -n '3,23p' "$0"; exit 0 ;;
+        -h|--help) sed -n '3,25p' "$0"; exit 0 ;;
         -*) die "unknown option $1 (see --help)" ;;
         *) [ -z "${PROJECT}" ] || die "one project dir only (got '${PROJECT}' and '$1')"; PROJECT="$1"; shift ;;
     esac
@@ -201,7 +204,8 @@ if [ -n "${UUID_ARG}" ]; then RUN_UUID="${UUID_ARG}"; UUID_SRC="--uuid"
 else RUN_UUID=$(toml_get "" run_uuid "${PARAMS}"); UUID_SRC="parameters.toml"; fi
 [ -n "${RUN_UUID}" ] || die "no run_uuid: set a top-level run_uuid in parameters.toml or pass --uuid (a resume must reach the same uuid)"
 [[ "${RUN_UUID}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || die "run_uuid '${RUN_UUID}' may hold only letters, digits, _ . - (and not start with . or -)"
-JOB_NAME="wrf-${RUN_UUID}"
+JOB_NAME="${JOB_NAME_ARG:-wrf-${RUN_UUID}}"
+[[ "${JOB_NAME}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || die "job name '${JOB_NAME}' may hold only letters, digits, _ . - (and not start with . or -)"
 
 # ---- Chunk count -------------------------------------------------------------
 # WRF runs from start_date - begin_hours to the end (params._config_window); one job per interval_days chunk.
@@ -230,6 +234,7 @@ write_job_env() {
 echo "WRF restart chain -> ${CLUSTER}"
 echo "  project:   ${PROJECT}"
 echo "  run_uuid:  ${RUN_UUID}   (from ${UUID_SRC})"
+echo "  job name:  ${JOB_NAME}"
 echo "  window:    $(date -u -d "@$(( START_S - BEGIN_H * 3600 ))" '+%F %T') -> $(date -u -d "@${END_S}" '+%F %T') (incl. ${BEGIN_H} h spin-up)"
 echo "  jobs:      ${N} = ${CHUNKS} chunks of ${INTERVAL} d + ${SPARES} spare(s); job 1 starts at once, the rest afterany"
 echo "  image:     ${SIF_PATH}"

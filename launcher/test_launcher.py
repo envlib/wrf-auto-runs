@@ -774,12 +774,35 @@ def hook_cases(E):
     check('hooks: hooks/ with neither pre nor post -> refused (a misnamed hook would silently never run)',
           rc == 1 and not cl and 'neither pre nor post' in out, out[-150:])
 
+def jobname_cases(E):
+    """--job-name: every job carries it, and the queue check and the rollback key on it."""
+    me = os.environ.get('USER') or __import__('pwd').getpwuid(os.getuid()).pw_name
+    p = E.project(extra='spares = 0')
+    rc, out, cl = E.submit(p, '--job-name', 'c1-2021', now='20261008T000000Z')
+    check('job name: --job-name c1-2021 -> every job carries it (and the summary says so)',
+          rc == 0 and cl and all('--job-name=c1-2021' in c['opts'] for c in cl) and 'job name:  c1-2021' in out, out[-200:])
+    rc, out, cl = E.submit(E.project(), '--job-name', 'c1-2021', extra_env={'QUEUED_NAME': 'c1-2021'}, now='20261008T000001Z')
+    check('job name: the queue check uses it -- c1-2021 queued -> refused [check keyed on the default name]',
+          rc == 1 and not cl and 'c1-2021 is already queued' in out, out[-200:])
+    rc, out, cl = E.submit(E.project(), '--job-name', 'c1-2021', extra_env={'QUEUED_NAME': 'wrf-t_run'}, now='20261008T000002Z')
+    check('job name: ... and only it -- a queued wrf-<uuid> does not block a chain named c1-2021', rc == 0 and len(cl) == 18, out[-200:])
+    rc, out, cl = E.submit(E.project(extra='spares = 0'), '--job-name', 'c1-2021', extra_env={'FAKE_FAIL_AT': '2'}, now='20261008T000003Z')
+    cancelled = E.cancel.read_text().splitlines() if E.cancel.exists() else []
+    check('job name: the rollback cancels by it [orphans left under the custom name]', rc == 1 and f'-u {me} -n c1-2021' in cancelled,
+          cancelled)
+    rc, out, _ = E.submit(E.project(), '--job-name', 'c1-2021', '--dry-run', now='20261008T000004Z')
+    check('job name: the dry run\'s --test-only line uses it', rc == 0 and '--test-only' in out
+          and '--job-name=c1-2021' in [ln for ln in out.splitlines() if '--test-only' in ln][0], out[-200:])
+    for bad in ('a b', '-x', 'c1/2021'):
+        rc, out, cl = E.submit(E.project(), '--job-name', bad, now='20261008T000005Z')
+        check(f'job name: "{bad}" -> refused, zero sbatch', rc == 1 and not cl, out[-150:])
+
 
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix='launcher_test_'))
     try:
         for fn in (count_cases, chain_cases, argv_cases, queue_cases, uuid_cases, snapshot_cases, env_cases,
-                   validation_cases, rollback_cases, runtime_cases, signal_cases, review_cases, runtime_more_cases, hook_cases):
+                   validation_cases, rollback_cases, runtime_cases, signal_cases, review_cases, runtime_more_cases, hook_cases, jobname_cases):
             sub = tmp / fn.__name__
             sub.mkdir()
             fn(Env(sub))
