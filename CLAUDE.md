@@ -260,14 +260,26 @@ One-way nesting from a prior WRF run. Activated by the `[ndown]` section in `par
 
 ## SLURM Orchestration
 
-For production unified per-chunk runs, a per-project orchestrator script (`run_wrf_hetzner.sh` is the working pattern) is a plain bash script (not a SLURM job) that:
+**Restart chains go through `launcher/` (2026-10-04)** — one `submit` + one generic `chunk.sl` for every cluster, so
+a project dir is just `parameters.toml` + `launcher.toml`. Cluster specifics (every sbatch resource option, the
+shared base for the SIF and `WPS_GEOG`, scratch, the Apptainer module) live in a site file outside this public repo;
+`launcher/site_example.toml` shows the shape. Full usage: `launcher/README.md`. In short, `submit`:
 
-1. Resolves `RUN_UUID` (env > `parameters.toml` > generated).
-2. Reads `start_date` / `end_date` / `interval_days` / `stop_after_upload` from `parameters.toml` via a small awk-based TOML reader (no python deps in the cluster's global env).
-3. Computes `num_chunks = ceil((end - start) / interval_days) + 1` (the +1 hits the early-exit branch and no-ops).
-4. Submits `num_chunks` chained `chunk.sl` jobs via `--dependency=afterany`. Each chunk auto-detects its position from S3 wrfrst state.
+1. Validates everything before the first `sbatch`, refusing chains that would queue and then do nothing useful
+   (`[restart] enable`/`stop_after_upload` not true, no `[remote.output] path`, `preprocess_only`).
+2. Takes `run_uuid` from `--uuid` or the top-level `run_uuid` (never generated: a resume must reach the same uuid).
+3. Computes `N = ceil((end − start + begin_hours) / interval_days) + spares` — the pipeline's window starts
+   `begin_hours` before `start_date` (`params._config_window`); `end` may come from `duration_hours`.
+4. Writes a snapshot `<project>/runs/<UTC time>-<cluster>/` (both tomls + `job.env`) that the jobs read instead of
+   the project, then submits N `chunk.sl` jobs chained `afterany`. Each chunk auto-detects its position from S3
+   wrfrst state; jobs past the end exit in minutes.
 
-Shared bash helpers (`toml_get`, `gen_uuid`, `resolve_run_uuid`) live in a per-project `lib.sh` that the three project shell scripts (`run_local.sh`, `run_one_chunk.sh`, `run_wrf_<cluster>.sh`) all source. Copy `lib.sh` alongside when cloning a new project dir.
+Optional project `hooks/pre` (fatal) and `hooks/post` (warning only) run around the pipeline, e.g. a campaign's config
+guard or restart archive (README § Hooks). Self-test: `python3 launcher/test_launcher.py` (stdlib only, fake
+Slurm/Apptainer).
+
+The per-project script sets under `slurm_scripts/` (`run_wrf_<cluster>.sh` + `chunk.sl` + `lib.sh`) are the older
+pattern, kept as reference. Their chunk count ignores `begin_hours` (it has no "+1").
 
 The legacy split-pipeline pattern (separate `preprocess.sl` + `wrf.sl` chained via `--dependency=afterok`) is still supported — see `slurm_scripts/readme.md` for cluster-specific variants.
 

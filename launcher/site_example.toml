@@ -1,0 +1,21 @@
+# Example site file for launcher/submit -- keep the real one OUTSIDE this public repo (it names accounts and paths).
+# One table per cluster; the table name is what you pass to --cluster. Values are literal (no $USER expansion).
+#
+#   sbatch_args   every sbatch resource option for this cluster (the generic chunk.sl header has only --nodes=1
+#                 and the log names). Must include --ntasks: the pipeline's n_cores comes from SLURM_NTASKS.
+#   shared_base   SIF = <shared_base>/<image_name>_<image_version>.sif, WPS_GEOG = <shared_base>/WPS_GEOG,
+#                 Apptainer cache = <shared_base>/.apptainer
+#   scratch_base  each job's scratch = <scratch_base>/<jobid> (node-local is fine)
+#   module_load   loaded (after `module purge`) only when apptainer is not already on PATH; "" for none
+
+[mycluster]
+sbatch_args  = "--partition=batch --time=24:00:00 --ntasks=48 --mem=0 --cpus-per-task=2 --hint=nomultithread --ntasks-per-core=1 --exclusive"
+shared_base  = "/shared/wrf_data"
+scratch_base = "/var/tmp/wrf_scratch"
+module_load  = ""
+
+[hpc_example]
+sbatch_args  = "--account=nesi99999 --partition=compute --time=24:00:00 --ntasks=48 --mem=64G --cpus-per-task=1"
+shared_base  = "/nobackup/nesi99999/<<<USERNAME>>>"
+scratch_base = "/nobackup/nesi99999/<<<USERNAME>>>/wrf_runs"
+module_load  = "Apptainer"

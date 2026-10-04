@@ -1,5 +1,9 @@
 # Slurm Scripts for WRF-Auto Pipeline
 
+> **Superseded for restart chains (2026-10-04) by [`../launcher/`](../launcher/README.md)** — one `submit` and one
+> generic `chunk.sl` for every cluster, with cluster settings in a site file. The scripts here are kept as
+> reference for the single-stage, array and split-pipeline patterns, which the launcher does not cover.
+
 These scripts run the WRF-Auto pipeline inside an Apptainer container on HPC clusters managed by Slurm.
 
 The pipeline supports two execution patterns:
@@ -150,7 +154,7 @@ Variant configured for a different HPC environment.
 
 For long simulations with FDDA (where an up-front-preprocess wrffdda would be ~200 GB and re-downloaded by every chunk), the unified per-chunk pattern moves preprocess INSIDE each chunk's container. wrfbdy/wrffdda/wrfinput/wrflowinp/trmask never round-trip through S3 — only wrfrst (chunk handoff) and namelists (debug archive) persist. Per-project files:
 
-- **`run_wrf_<cluster>.sh`** — Plain bash orchestrator (NOT a SLURM job). Run with `./run_wrf_<cluster>.sh`. Reads `interval_days` and sim window from `parameters.toml` via the awk-based `toml_get` helper in `lib.sh`, computes `num_chunks = ceil(days/interval) + 1` (the +1 trips the early-exit branch and no-ops), and submits a chained `chunk.sl` job per chunk via `--dependency=afterany`.
+- **`run_wrf_<cluster>.sh`** — Plain bash orchestrator (NOT a SLURM job). Run with `./run_wrf_<cluster>.sh`. Reads `interval_days` and sim window from `parameters.toml` via the awk-based `toml_get` helper in `lib.sh`, computes `num_chunks = ceil(days/interval)` (no spare job, and the spin-up `begin_hours` is not counted -- `launcher/submit` counts both), and submits a chained `chunk.sl` job per chunk via `--dependency=afterany`.
 - **`chunk.sl`** — SLURM job (intel image, `wrf-auto-runs-intel-wvt:1.8`). One container = one chunk. Auto-detects which chunk it is via S3 wrfrst state. Runs preprocess + WRF for its `[chunk_start, chunk_end]` window. Sets both `n_cores=${SLURM_NTASKS}` and `n_cores_preprocess=${SLURM_NTASKS}` so the same allocation runs preprocess (dmpar metgrid/real) and wrf.exe at full width.
 - **`run_one_chunk.sh`** — Test helper. Submits a single `chunk.sl` job with the current run_uuid; useful for iterating on chunk behaviour without launching the full chain.
 - **`run_local.sh`** — Local docker-compose runner. Resolves `RUN_UUID` and runs `docker compose up`; with `stop_after_upload=false` it loops through all chunks in one container.
@@ -167,7 +171,7 @@ stop_after_upload = true   # required for chained-chunk pattern; false = loop-in
 
 Auto-cleanup of `inputs/<run_uuid>/` is disabled when `stop_after_upload=true` (the prefix is shared across chained jobs); manually purge after the chain completes. With `stop_after_upload=false` the inputs prefix is purged automatically on clean exit.
 
-The working unified-mode pattern lives in `wrf-runs/projects/.../v33_3km_wvt_sst_max_pp/`. To create a unified-mode run for another project, copy those five files (`run_wrf_<cluster>.sh`, `chunk.sl`, `run_one_chunk.sh`, `run_local.sh`, `lib.sh`) plus `parameters.toml` and `docker-compose.yml`.
+For a new restart-chain run, use [`../launcher/`](../launcher/README.md) instead of copying these files.
 
 ### Known gotcha: `/tmp` size with `--contain --writable-tmpfs`
 

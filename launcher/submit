@@ -1,0 +1,314 @@
+#!/bin/bash
+# =============================================================================
+# Submit a WRF restart chain for one project dir to one cluster.
+#
+#     submit --cluster hetzner --site site.toml path/to/project            # queue the chain
+#     submit --cluster hetzner --site site.toml path/to/project --dry-run  # print it, submit nothing
+#
+# Options:  --uuid U          run_uuid (default: parameters.toml's top-level run_uuid; one of the two is required)
+#           --keep-scratch    keep every job's scratch dir, even on success
+#           --max-jobs N      allow a chain of more than 60 jobs (a guard against a mistyped end_date)
+#           --dry-run         validate and print the plan; writes nothing, calls neither squeue nor sbatch
+#
+# The project dir holds parameters.toml (the pipeline's config) and launcher.toml (image, extra sbatch args,
+# spares, extra container env). The site file holds, per cluster, every sbatch resource option and the paths.
+# See README.md next to this script.
+#
+# What it does: validates everything, then writes a snapshot <project>/runs/<UTC time>-<cluster>/ (both tomls,
+# chunk.sl, job.env) and submits N chained copies of chunk.sl, each `afterany` on the one before. Jobs read only
+# the snapshot. Re-running the same command resumes the chain: the pipeline finds the latest restart under the
+# same run_uuid, and jobs past the end exit in minutes.
+#
+# Needs only bash >= 4.4, awk, GNU date, sbatch, squeue, scancel on the login node.
+# =============================================================================
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd -P)"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# ---- TOML helpers (flat values only; awk, no python on the host) -------------
+toml_get() {
+    # toml_get <section|""> <key> <file>: one value, comments and surrounding quotes stripped; empty if absent.
+    # "" reads top-level keys (before the first table). A `#` inside a quoted value is cut (known limit).
+    awk -v sec="$1" -v key="$2" '
+        { sub(/\r$/, "") }
+        BEGIN { in_sec = (sec == "") }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*\[/ {
+            line = $0; sub(/[[:space:]]*#.*$/, "", line)
+            if (line ~ /^[[:space:]]*\[.+\][[:space:]]*$/) {
+                sub(/^[[:space:]]*\[/, "", line); sub(/\][[:space:]]*$/, "", line); in_sec = (line == sec)
+            }
+            next
+        }
+        in_sec {
+            k = $0; sub(/=.*/, "", k); gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+            if (k == key && index($0, "=") > 0) {
+                v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]*#.*$/, "", v); sub(/[[:space:]]+$/, "", v)
+                gsub(/^["'\'']|["'\'']$/, "", v); print v; exit
+            }
+        }' "$3"
+}
+
+toml_kv() {
+    # toml_kv <section> <file>: every `key<TAB>value` line in one table. A line that is not `key = one-line
+    # value` (a multi-line string, an array, an inline table, a continuation) prints `!BAD<TAB><line>`.
+    awk -v sec="$1" '
+        { sub(/\r$/, "") }
+        /^[[:space:]]*(#|$)/ { next }
+        /^[[:space:]]*\[/ {
+            line = $0; sub(/[[:space:]]*#.*$/, "", line)
+            sub(/^[[:space:]]*\[/, "", line); sub(/\][[:space:]]*$/, "", line); in_sec = (line == sec); next
+        }
+        in_sec {
+            if ($0 !~ /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*[^[:space:]]/) { print "!BAD\t" $0; next }
+            k = $0; sub(/=.*/, "", k); gsub(/[[:space:]]/, "", k)
+            v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]*#.*$/, "", v); sub(/[[:space:]]+$/, "", v)
+            if (v ~ /^("""|'\'\'\''|\[|\{)/) { print "!BAD\t" $0; next }
+            gsub(/^["'\'']|["'\'']$/, "", v); print k "\t" v
+        }' "$2"
+}
+
+toml_has_table() { grep -qE "^[[:space:]]*\[$1\][[:space:]]*(#.*)?$" "$2"; }
+
+# ---- Arguments ---------------------------------------------------------------
+CLUSTER="" SITE="" PROJECT="" UUID_ARG="" DRY_RUN=0 KEEP_SCRATCH="" MAX_JOBS=60
+needs_value() { [ -n "${2:-}" ] || die "$1 needs a value"; }
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --cluster) needs_value "$@"; CLUSTER="$2"; shift 2 ;;
+        --site) needs_value "$@"; SITE="$2"; shift 2 ;;
+        --uuid) needs_value "$@"; UUID_ARG="$2"; shift 2 ;;
+        --max-jobs) needs_value "$@"; MAX_JOBS="$2"; shift 2
+                    [[ "${MAX_JOBS}" =~ ^[0-9]+$ ]] || die "--max-jobs must be a whole number" ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        --keep-scratch) KEEP_SCRATCH=1; shift ;;
+        -h|--help) sed -n '3,23p' "$0"; exit 0 ;;
+        -*) die "unknown option $1 (see --help)" ;;
+        *) [ -z "${PROJECT}" ] || die "one project dir only (got '${PROJECT}' and '$1')"; PROJECT="$1"; shift ;;
+    esac
+done
+[ -n "${CLUSTER}" ] || die "--cluster is required"
+[ -n "${SITE}" ] || die "--site is required"
+[ -n "${PROJECT}" ] || die "a project dir is required"
+[[ "${CLUSTER}" =~ ^[A-Za-z0-9_]+$ ]] || die "--cluster '${CLUSTER}' must be letters, digits and _"
+[ -f "${SITE}" ] || die "site file not found: ${SITE}"
+[ -d "${PROJECT}" ] || die "project dir not found: ${PROJECT}"
+PROJECT="$(cd "${PROJECT}" && pwd -P)"     # absolute: the job runs with --chdir into the snapshot
+[[ "${PROJECT}" != *[,:]* ]] || die "project path must not contain ',' or ':' (they break apptainer --bind): ${PROJECT}"
+PARAMS="${PROJECT}/parameters.toml"
+LAUNCH="${PROJECT}/launcher.toml"
+[ -f "${PARAMS}" ] || die "parameters.toml not found in ${PROJECT}"
+[ -f "${LAUNCH}" ] || die "launcher.toml not found in ${PROJECT}"
+HOOKS="${PROJECT}/hooks"                    # optional: hooks/pre and/or hooks/post, plus any files they use
+if [ -e "${HOOKS}" ]; then
+    [ -d "${HOOKS}" ] || die "${HOOKS} must be a directory"
+    for h in pre post; do
+        [ ! -e "${HOOKS}/${h}" ] || [ -s "${HOOKS}/${h}" ] || die "hooks/${h} is empty"
+    done
+    [ -e "${HOOKS}/pre" ] || [ -e "${HOOKS}/post" ] || die "hooks/ holds neither pre nor post"
+fi
+
+# ---- Site --------------------------------------------------------------------
+toml_has_table "${CLUSTER}" "${SITE}" || die "cluster '${CLUSTER}' has no [${CLUSTER}] table in ${SITE}"
+SITE_ARGS_S=$(toml_get "${CLUSTER}" sbatch_args "${SITE}")
+SHARED_BASE=$(toml_get "${CLUSTER}" shared_base "${SITE}")
+SCRATCH_BASE=$(toml_get "${CLUSTER}" scratch_base "${SITE}")
+MODULE_LOAD=$(toml_get "${CLUSTER}" module_load "${SITE}")
+for v in sbatch_args shared_base scratch_base; do
+    [ -n "$(toml_get "${CLUSTER}" "$v" "${SITE}")" ] || die "[${CLUSTER}] in ${SITE} must set ${v}"
+done
+for v in "${SITE_ARGS_S}" "${SHARED_BASE}" "${SCRATCH_BASE}" "${MODULE_LOAD}"; do
+    [[ "$v" != *'$'* ]] || die "[${CLUSTER}] values are literal -- write the path out, no \$VARIABLES: ${v}"
+    [[ "$v" != *'<<<'* ]] || die "[${CLUSTER}] in ${SITE} still holds a <<<placeholder>>>: ${v}"
+done
+
+# ---- launcher.toml -------------------------------------------------------------
+while IFS= read -r t; do
+    [[ "$t" =~ ^(launcher|env)$ ]] || die "launcher.toml: unknown table [${t}] (allowed: [launcher], [env])"
+done < <(sed -nE 's/^[[:space:]]*\[([^]]*)\][[:space:]]*(#.*)?$/\1/p' "${LAUNCH}")
+while IFS=$'\t' read -r k v; do
+    [ "$k" != "!BAD" ] || die "launcher.toml [launcher]: not a one-line key = value: ${v}"
+    [[ "$k" =~ ^(image_name|image_version|sbatch_args|spares)$ ]] \
+        || die "launcher.toml [launcher]: unknown key '${k}' (allowed: image_name image_version sbatch_args spares)"
+done < <(toml_kv launcher "${LAUNCH}")
+IMAGE_NAME=$(toml_get launcher image_name "${LAUNCH}")
+IMAGE_VERSION=$(toml_get launcher image_version "${LAUNCH}")
+PROJ_ARGS_S=$(toml_get launcher sbatch_args "${LAUNCH}")
+SPARES=$(toml_get launcher spares "${LAUNCH}"); SPARES="${SPARES:-1}"
+[ -n "${IMAGE_NAME}" ] && [ -n "${IMAGE_VERSION}" ] || die "launcher.toml [launcher] must set image_name and image_version"
+[[ "${SPARES}" =~ ^[0-9]+$ ]] || die "launcher.toml spares must be a whole number (got '${SPARES}')"
+SPARES=$(( 10#${SPARES} ))                  # base 10: '010' is ten, not octal eight
+
+# [env]: one container --env per key. Names the pipeline or chunk.sl already set are refused, because a second
+# value would silently desynchronise the chain (run_uuid -> wrong prefix; dates -> wrong chunk count).
+RESERVED=" run_uuid start_date end_date duration_hours domains n_cores n_cores_preprocess preprocess_only
+ cleanup_inputs upload_end_frame restart_enable restart_interval_days restart_stop_after_upload TZ HYDRA_LAUNCHER
+ HYDRA_IFACE RCLONE_TIMEOUT RCLONE_CONTIMEOUT RCLONE_LOW_LEVEL_RETRIES RCLONE_RETRIES "
+RESERVED="${RESERVED//$'\n'/ }"
+EXTRA_ENV=()
+while IFS=$'\t' read -r k v; do
+    [ "$k" != "!BAD" ] || die "launcher.toml [env]: not a one-line key = value: ${v}"
+    [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "launcher.toml [env]: bad name '${k}'"
+    [[ "${RESERVED}" != *" ${k} "* ]] || die "launcher.toml [env]: '${k}' is set by the launcher or the pipeline config"
+    [[ "$v" != *,* ]] || die "launcher.toml [env] ${k}: values must not contain ',' (apptainer --env splits on it)"
+    EXTRA_ENV+=("${k}=${v}")
+done < <(toml_kv env "${LAUNCH}")
+
+read -ra SITE_ARGS <<< "${SITE_ARGS_S}"
+read -ra PROJ_ARGS <<< "${PROJ_ARGS_S}"
+HAS_NTASKS=0
+for a in "${SITE_ARGS[@]}" "${PROJ_ARGS[@]}"; do [[ "$a" =~ ^(--ntasks(=|$)|-n) ]] && HAS_NTASKS=1; done
+[ "${HAS_NTASKS}" -eq 1 ] || die "no --ntasks in the site or project sbatch_args (the pipeline's n_cores comes from it)"
+
+# ---- parameters.toml: refuse a chain that would queue and then do nothing useful ---
+[ "$(toml_get restart enable "${PARAMS}")" = "true" ] || die "[restart] enable must be true (this launcher runs restart chains)"
+[ "$(toml_get restart stop_after_upload "${PARAMS}")" = "true" ] \
+    || die "[restart] stop_after_upload must be true (otherwise each job loops through every chunk until its walltime)"
+INTERVAL=$(toml_get restart interval_days "${PARAMS}")
+[[ "${INTERVAL}" =~ ^[0-9]+$ ]] && [ "$(( 10#${INTERVAL} ))" -gt 0 ] || die "[restart] interval_days must be a positive whole number (got '${INTERVAL}')"
+INTERVAL=$(( 10#${INTERVAL} ))
+[ "$(toml_get "" preprocess_only "${PARAMS}")" != "true" ] || die "preprocess_only = true bypasses chunked mode"
+[ -n "$(toml_get remote.output path "${PARAMS}")" ] \
+    || die "[remote.output] path is not set -- without it every job finds no restart and cold-starts chunk 1"
+if grep -qE '^[[:space:]]*(access_key_id|secret_access_key)[[:space:]]*=.*SET-BEFORE-RUN' "${PARAMS}"; then
+    die "parameters.toml: an active credential is still <<<SET-BEFORE-RUN>>>"
+fi
+START=$(toml_get time_control start_date "${PARAMS}")
+END=$(toml_get time_control end_date "${PARAMS}")
+DUR=$(toml_get time_control duration_hours "${PARAMS}")
+BEGIN_H=$(toml_get time_control.history_file begin_hours "${PARAMS}")
+[ -n "${START}" ] || die "[time_control] start_date is not set"
+[[ "${BEGIN_H}" =~ ^[0-9]+$ ]] || die "[time_control.history_file] begin_hours must be a whole number (it is required; got '${BEGIN_H}')"
+BEGIN_H=$(( 10#${BEGIN_H} ))
+DATE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}([ T][0-9]{2}:[0-9]{2}(:[0-9]{2})?)?$'   # what the pipeline's parser takes;
+[[ "${START}" =~ ${DATE_RE} ]] || die "start_date '${START}' is not YYYY-MM-DD[ HH:MM[:SS]]"   # GNU date takes far more
+START_S=$(date -u -d "${START}" +%s) || die "start_date '${START}' does not parse"
+if grep -qE '^[[:space:]]*end_date[[:space:]]*=' <(sed -n '/^[[:space:]]*\[time_control\]/,/^[[:space:]]*\[/p' "${PARAMS}"); then
+    [ -n "${END}" ] || die "[time_control] end_date is empty"
+    [[ "${END}" =~ ${DATE_RE} ]] || die "end_date '${END}' is not YYYY-MM-DD[ HH:MM[:SS]]"
+    END_S=$(date -u -d "${END}" +%s) || die "end_date '${END}' does not parse"
+elif [ -n "${DUR}" ]; then                  # the pipeline prefers end_date when both are set (params.py)
+    [[ "${DUR}" =~ ^[0-9]+$ ]] || die "duration_hours must be a whole number (got '${DUR}')"
+    END_S=$(( START_S + 10#${DUR} * 3600 ))
+else
+    die "[time_control] needs end_date or duration_hours"
+fi
+[ "${END_S}" -gt "${START_S}" ] || die "the simulation must end after it starts"
+
+# ---- run_uuid ----------------------------------------------------------------
+if [ -n "${UUID_ARG}" ]; then RUN_UUID="${UUID_ARG}"; UUID_SRC="--uuid"
+else RUN_UUID=$(toml_get "" run_uuid "${PARAMS}"); UUID_SRC="parameters.toml"; fi
+[ -n "${RUN_UUID}" ] || die "no run_uuid: set a top-level run_uuid in parameters.toml or pass --uuid (a resume must reach the same uuid)"
+[[ "${RUN_UUID}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || die "run_uuid '${RUN_UUID}' may hold only letters, digits, _ . - (and not start with . or -)"
+JOB_NAME="wrf-${RUN_UUID}"
+
+# ---- Chunk count -------------------------------------------------------------
+# WRF runs from start_date - begin_hours to the end (params._config_window); one job per interval_days chunk.
+TOTAL=$(( END_S - START_S + BEGIN_H * 3600 ))
+STEP=$(( INTERVAL * 86400 ))
+CHUNKS=$(( (TOTAL + STEP - 1) / STEP ))
+N=$(( CHUNKS + SPARES ))
+[ "${N}" -le "${MAX_JOBS}" ] || die "${N} jobs is more than ${MAX_JOBS} -- check the window and interval_days; pass --max-jobs ${N} if it is right"
+
+# ---- Snapshot location -------------------------------------------------------
+NOW="${LAUNCHER_NOW:-$(date -u +%Y%m%dT%H%M%SZ)}"     # LAUNCHER_NOW: tests only
+RUN_DIR="${PROJECT}/runs/${NOW}-${CLUSTER}"
+SIF_PATH="${SHARED_BASE}/${IMAGE_NAME}_${IMAGE_VERSION}.sif"
+
+write_job_env() {
+    local v
+    for v in CLUSTER RUN_UUID IMAGE_NAME IMAGE_VERSION SIF_PATH SHARED_BASE SCRATCH_BASE MODULE_LOAD KEEP_SCRATCH; do
+        printf '%s=%q\n' "$v" "${!v}"
+    done
+    printf 'WPS_GEOG_PATH=%q\n' "${SHARED_BASE}/WPS_GEOG"
+    if [ "${#EXTRA_ENV[@]}" -gt 0 ]; then
+        printf 'EXTRA_ENV=('; printf ' %q' "${EXTRA_ENV[@]}"; printf ' )\n'
+    fi
+}
+
+echo "WRF restart chain -> ${CLUSTER}"
+echo "  project:   ${PROJECT}"
+echo "  run_uuid:  ${RUN_UUID}   (from ${UUID_SRC})"
+echo "  window:    $(date -u -d "@$(( START_S - BEGIN_H * 3600 ))" '+%F %T') -> $(date -u -d "@${END_S}" '+%F %T') (incl. ${BEGIN_H} h spin-up)"
+echo "  jobs:      ${N} = ${CHUNKS} chunks of ${INTERVAL} d + ${SPARES} spare(s); job 1 starts at once, the rest afterany"
+echo "  image:     ${SIF_PATH}"
+echo "  snapshot:  ${RUN_DIR}"
+[ ! -d "${HOOKS}" ] || echo "  hooks:     $(cd "${HOOKS}" && ls -1 | tr '\n' ' ')(pre stops the job on failure; post only warns)"
+[ "${#EXTRA_ENV[@]}" -eq 0 ] || echo "  [env]:     ${EXTRA_ENV[*]}"
+
+sbatch_argv() {   # sbatch_argv <dependency or ""> -> the argv of one job, NUL-separated
+    printf '%s\0' --parsable "${SITE_ARGS[@]}" "${PROJ_ARGS[@]}" --job-name="${JOB_NAME}" --chdir="${RUN_DIR}"
+    [ -z "$1" ] || printf '%s\0' --dependency="afterany:$1"
+    printf '%s\0' "${RUN_DIR}/chunk.sl" "${RUN_DIR}"
+}
+
+if [ "${DRY_RUN}" -eq 1 ]; then
+    echo ""
+    echo "DRY RUN -- nothing written or submitted. job.env would be:"
+    write_job_env | sed 's/^/    /'
+    for i in $(seq 1 "${N}"); do
+        dep=""; [ "$i" -eq 1 ] || dep="<job$((i - 1))>"
+        mapfile -d '' ARGV < <(sbatch_argv "${dep}")
+        printf '  sbatch'; printf ' %q' "${ARGV[@]}"; printf '\n'
+    done
+    echo ""
+    echo "To check the options with Slurm itself (runs nothing):"
+    printf '  sbatch --test-only'; printf ' %q' "${SITE_ARGS[@]}" "${PROJ_ARGS[@]}" --job-name="${JOB_NAME}" "${HERE}/chunk.sl"; printf '\n'
+    exit 0
+fi
+
+# ---- Queue check: not a uuid that is already queued or running here ----------------
+command -v squeue >/dev/null || die "squeue not found"
+Q=$(squeue -h -u "${USER:-$(id -un)}" -n "${JOB_NAME}" -o '%i')
+[ -z "${Q}" ] || die "${JOB_NAME} is already queued or running here (job $(echo ${Q})) -- scancel it or wait"
+
+# ---- Snapshot + chain ----------------------------------------------------------
+# The snapshot copies parameters.toml, which may hold storage credentials: write it under umask 077 (plain cp, so the
+# copies take the umask rather than the source's mode), then restore the umask -- sbatch passes the submitter's
+# umask on to the jobs, whose scratch, logs and caches should keep the usual permissions.
+OLD_UMASK=$(umask)
+umask 077
+mkdir -p "${PROJECT}/runs"
+mkdir "${RUN_DIR}" || die "snapshot dir ${RUN_DIR} already exists -- wait a second and re-run"
+cp "${PARAMS}" "${LAUNCH}" "${RUN_DIR}/"
+cp "${HERE}/chunk.sl" "${RUN_DIR}/chunk.sl"
+[ ! -d "${HOOKS}" ] || cp -r "${HOOKS}" "${RUN_DIR}/hooks"
+write_job_env > "${RUN_DIR}/job.env"
+umask "${OLD_UMASK}"
+
+SUBMITTED=()
+rollback() {
+    trap - INT TERM HUP
+    echo "ERROR: $1 -- cancelling this chain (${#SUBMITTED[@]} job id(s) recorded)" >&2
+    local i ok=1
+    # Newest first, by id. One of these may fail harmlessly (a job that already ended), so only the by-name cancel
+    # below decides the report: it catches every ${JOB_NAME} job, including one sbatch accepted after a signal landed
+    # but before its id was recorded. Safe, because the queue check proved none existed before this run.
+    for (( i=${#SUBMITTED[@]}-1; i>=0; i-- )); do scancel "${SUBMITTED[$i]}" >&2 || true; done
+    scancel -u "${USER:-$(id -un)}" -n "${JOB_NAME}" >&2 || ok=0
+    if [ "${ok}" -eq 1 ]; then
+        echo "       Cancelled. Re-run the same command when the cause is fixed." >&2
+    else
+        echo "       scancel FAILED (above) -- check with: squeue -u \$USER -n ${JOB_NAME}" >&2
+    fi
+    exit 1
+}
+trap 'rollback "interrupted"' INT TERM HUP
+
+unset "${!SBATCH_@}"            # SBATCH_* in the login shell would silently override options
+PREV=""
+for i in $(seq 1 "${N}"); do
+    mapfile -d '' ARGV < <(sbatch_argv "${PREV}")
+    JOB=$(sbatch "${ARGV[@]}") || rollback "sbatch failed at job ${i} of ${N}"
+    JOB="${JOB%%;*}"                                     # --parsable may print "id;cluster"
+    [[ "${JOB}" =~ ^[0-9]+$ ]] || rollback "sbatch printed '${JOB}', not a job id"
+    SUBMITTED+=("${JOB}")
+    PREV="${JOB}"
+done
+trap - INT TERM HUP
+
+echo ""
+echo "Submitted ${N} jobs: ${SUBMITTED[0]} .. ${PREV}"
+echo "Track:  squeue -u \$USER -n ${JOB_NAME}      Logs: ${RUN_DIR}/log_chunk_<jobid>.log"
+echo "Resume: re-run this command (same run_uuid)."

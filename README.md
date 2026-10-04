@@ -31,7 +31,9 @@ cp parameters_example.toml parameters.toml
 docker compose run --rm chunk   # local
 ```
 
-The working unified-mode project lives at `wrf-runs/projects/.../v33_3km_wvt_sst_max_pp/`. To start a new project, copy that directory's `chunk.sl`, `run_wrf_<cluster>.sh`, `run_one_chunk.sh`, `run_local.sh`, `lib.sh`, and `docker-compose.yml`, then customise `parameters.toml`.
+**On a Slurm cluster, use [`launcher/`](launcher/README.md):** a project dir is just `parameters.toml` (with
+`stop_after_upload = true`) plus a small `launcher.toml`, and `launcher/submit --cluster <name> --site <site.toml>
+<project_dir>` queues the whole chain. Nothing is copied per project or per cluster.
 
 ## Quick Start (Single-Stage)
 
@@ -95,7 +97,7 @@ Activates the unified per-chunk workflow (the recommended mode for production ru
 
 - **`enable`** (default `false`) — Master switch.
 - **`interval_days`** (required when `enable=true`) — Chunk window length and WRF `restart_interval` (set to `interval_days * 24 * 60` minutes). Each chunk writes a wrfrst at chunk_end and uploads it to `inputs/<run_uuid>/` (only the latest per domain is kept on S3; older ones are deleted automatically).
-- **`stop_after_upload`** (default `false`) — When true, each invocation processes one chunk and exits cleanly (achieved by overriding `end_date*` in the namelist to `chunk_end`). Designed for SLURM chained jobs: queue multiple `sbatch chunk.sl` invocations reusing the same `RUN_UUID` (the per-project `run_wrf_<cluster>.sh` orchestrator computes how many chunks are needed and submits them via `--dependency=afterany`). When true, **disables auto-cleanup of `inputs/<run_uuid>/` regardless of `cleanup_inputs`** — manually purge after the simulation completes. When false, the chunk loop runs internally until sim_end (best for local docker-compose dev).
+- **`stop_after_upload`** (default `false`) — When true, each invocation processes one chunk and exits cleanly (achieved by overriding `end_date*` in the namelist to `chunk_end`). Designed for SLURM chained jobs: queue multiple `sbatch chunk.sl` invocations reusing the same `RUN_UUID` (`launcher/submit` computes how many chunks are needed and submits them via `--dependency=afterany`). When true, **disables auto-cleanup of `inputs/<run_uuid>/` regardless of `cleanup_inputs`** — manually purge after the simulation completes. When false, the chunk loop runs internally until sim_end (best for local docker-compose dev).
 
 Notes on chunked-run behaviour:
 
@@ -319,7 +321,8 @@ All output files are uploaded to `[remote.output]` during the run and deleted lo
 
 ```
 wrf-auto-runs/           Python pipeline modules
-slurm_scripts/           SLURM job scripts (cluster-specific)
+launcher/                Generic Slurm launcher for restart chains (submit + chunk.sl; README there)
+slurm_scripts/           Older per-cluster SLURM job scripts (reference)
 parameters_example.toml  Annotated configuration template
 docker-compose.yml       Docker run configuration (single-stage default)
 intel_wvt/               Intel WVT pipeline image build context (+ parameters_example_wvt.toml — multi-region [[wvt.regions]] schema)
