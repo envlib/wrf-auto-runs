@@ -24,14 +24,14 @@ from `parameters.toml` (`tracer_opt`/`[wvt]`) and is image-agnostic — pick the
 
 | Variant | Compiler | Pipeline image | Build context | Base (wrf-docker-builds) |
 |---|---|---|---|---|
-| no-WVT | gfortran | `wrf-auto-runs:2.9` (also the root `Dockerfile`/`docker-compose.yml`, same tag — bump both) | `gfortran_wrf/` ✦ | `wrf-wps-debian:1.2` |
-| no-WVT | Intel | `wrf-auto-runs-intel:1.5` | `intel_wrf/` | `wrf-wps-intel-ubuntu:1.0` |
-| single-region WVT | gfortran | `wrf-auto-runs-wvt:1.10` | `gfortran_wvt/` | `wrf-wps-wvt-debian:1.3` |
-| single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.2` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.0` ✦ |
-| **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.2` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.1` ✦ |
-| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.14`** (2.14 = nudging on for the whole run: `gfdda_end_h` from the simulation start, spin-up and restarts included, see the `[fdda]` bullet; 2.13 = pressure-level output + per-file `output_variables`, on base 2.7 whose init-time p/z-level diagnostics use dry θ; 2.12 = 2.11 + nested-domain SST updates; 2.11 = pipeline-only over base 2.6: intermediate input, output hook, `upload_end_frame`) | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.7` |
-| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.7` (the 2.14 pipeline on base avx512 1.3; 1.6 = the 2.13 pipeline; 1.5 = the 2.12 pipeline: + the `SENTRY_DSN` env override and nested-domain SST updates; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.3` |
-| reference (WRF 4.3.3) | gfortran | `wrf-auto-runs-wvt-ref:1.2` | `gfortran_wvt_ref/` | `wrf-wps-wvt-ref-debian:1.0` |
+| no-WVT | gfortran | `wrf-auto-runs:2.10` (also the root `Dockerfile`/`docker-compose.yml`, same tag — bump both) | `gfortran_wrf/` ✦ | `wrf-wps-debian:1.3` |
+| no-WVT | Intel | `wrf-auto-runs-intel:1.6` | `intel_wrf/` | `wrf-wps-intel-ubuntu:1.1` |
+| single-region WVT | gfortran | `wrf-auto-runs-wvt:1.11` | `gfortran_wvt/` | `wrf-wps-wvt-debian:1.5` |
+| single-region WVT | Intel | `wrf-auto-runs-intel-wvt-sr:1.3` ✦ | `intel_wvt_sr/` ✦ | `wrf-wps-intel-wvt-sr-ubuntu:1.1` ✦ |
+| **multi-region WVT** | gfortran | `wrf-auto-runs-wvt-mr:1.3` ✦ | `gfortran_wvt_mr/` ✦ | `wrf-wps-wvt-mr-debian:1.2` ✦ |
+| **multi-region WVT** | Intel | **`wrf-auto-runs-intel-wvt:2.15`** (2.15 = base 2.8, whose geogrid table falls back to GMTED2010 outside the LINZ DEM -- terrain was 0 m on every land cell outside NZ before -- and `run_geogrid` refuses flat land; 2.14 = nudging on for the whole run: `gfdda_end_h` from the simulation start, spin-up and restarts included, see the `[fdda]` bullet; 2.13 = pressure-level output + per-file `output_variables`, on base 2.7 whose init-time p/z-level diagnostics use dry θ; 2.12 = 2.11 + nested-domain SST updates; 2.11 = pipeline-only over base 2.6: intermediate input, output hook, `upload_end_frame`) | `intel_wvt/` | `wrf-wps-intel-wvt-ubuntu:2.8` |
+| **multi-region WVT, AVX-512** | Intel | `wrf-auto-runs-intel-wvt-avx512:1.8` (the 2.15 pipeline on base avx512 1.4: the GMTED terrain fallback outside NZ; 1.7 = the 2.14 pipeline on base avx512 1.3; 1.6 = the 2.13 pipeline; 1.5 = the 2.12 pipeline: + the `SENTRY_DSN` env override and nested-domain SST updates; the forecast runner's base — needs an AVX-512 host) | `intel_wvt_avx512/` | `wrf-wps-intel-wvt-ubuntu-avx512:1.4` |
+| reference (WRF 4.3.3) | gfortran | `wrf-auto-runs-wvt-ref:1.4` (1.4: the fixed geogrid table layered on; base frozen) | `gfortran_wvt_ref/` | `wrf-wps-wvt-ref-debian:1.0` |
 
 ✦ = **new scaffolding — build + validate on demand** (gfortran multi-region is the higher-risk
 cross-compile; the MR overlay was developed/validated on Intel `ifx`). The legacy

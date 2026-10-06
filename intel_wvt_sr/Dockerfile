@@ -1,4 +1,4 @@
-FROM mullenkamp/wrf-wps-intel-wvt-sr-ubuntu:1.0
+FROM mullenkamp/wrf-wps-intel-wvt-sr-ubuntu:1.1
 
 # This is the single-region image: its WRF registry declares TRMASK as 2-D (ij), so create_trmask
 # must write a flat TRMASK(Time, sn, we) rather than the multi-region region-dimensioned layout.
