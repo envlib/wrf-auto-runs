@@ -69,7 +69,11 @@ Values must fit on one line and contain no `,`, because Apptainer splits `--env`
 
 It reads `$1/job.env` and loads the Apptainer module if needed. It then runs the pipeline in the SIF with the
 standard binds (`parameters.toml`, `WPS_GEOG` read-only, scratch as `/data`, `/dev/shm`, and scratch
-`/tmp` — required, or ERA5 downloads truncate silently). Scratch is kept when the job fails, when an upload failed
+`/tmp` — required, or ERA5 downloads truncate silently). A **local** `[remote.output]` (`type = 'local'`, an rclone
+path on the cluster's own filesystem) is also bound, at the same path: `submit` refuses one that is not absolute or
+holds `,` or `:`, and writes it to `job.env` as `OUTPUT_BIND`. Before 2026-10-17 it was not bound, so the pipeline's
+rclone wrote into the container's ~64 MB writable tmpfs and the first restart upload failed with "preallocate: file
+too big for remaining disk space". An S3 output needs no bind. Scratch is kept when the job fails, when an upload failed
 (the local wrfout is then the only copy), or with `--keep-scratch`. A job whose pipeline succeeded but whose upload
 failed exits **75**, so `sacct` and mail-on-fail show it; the chain carries on, because the restart is a separate
 upload.

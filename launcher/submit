@@ -174,6 +174,18 @@ INTERVAL=$(( 10#${INTERVAL} ))
 [ "$(toml_get "" preprocess_only "${PARAMS}")" != "true" ] || die "preprocess_only = true bypasses chunked mode"
 [ -n "$(toml_get remote.output path "${PARAMS}")" ] \
     || die "[remote.output] path is not set -- without it every job finds no restart and cold-starts chunk 1"
+# A LOCAL output remote is a host path the pipeline writes to from inside --contain, so chunk.sl must bind it at the
+# same path. Unbound, rclone writes into the container's ~64 MB writable tmpfs and the first restart upload fails
+# "file too big for remaining disk space" (terrain family on uc_rch, 2026-10-16). S3 remotes need no bind.
+OUTPUT_BIND=""
+if [ "$(toml_get remote.output type "${PARAMS}")" = "local" ]; then
+    OUTPUT_BIND=$(toml_get remote.output path "${PARAMS}")
+    while [[ "${OUTPUT_BIND}" == */ && "${OUTPUT_BIND}" != / ]]; do OUTPUT_BIND="${OUTPUT_BIND%/}"; done
+    [[ "${OUTPUT_BIND}" == /?* ]] \
+        || die "[remote.output] type = 'local' needs an absolute path below / (it is bound into the container at the same path): '${OUTPUT_BIND}'"
+    [[ "${OUTPUT_BIND}" != *[,:]* ]] \
+        || die "[remote.output] local path must not contain ',' or ':' (they break apptainer --bind): ${OUTPUT_BIND}"
+fi
 if grep -qE '^[[:space:]]*(access_key_id|secret_access_key)[[:space:]]*=.*SET-BEFORE-RUN' "${PARAMS}"; then
     die "parameters.toml: an active credential is still <<<SET-BEFORE-RUN>>>"
 fi
@@ -222,7 +234,7 @@ SIF_PATH="${SHARED_BASE}/${IMAGE_NAME}_${IMAGE_VERSION}.sif"
 
 write_job_env() {
     local v
-    for v in CLUSTER RUN_UUID IMAGE_NAME IMAGE_VERSION SIF_PATH SHARED_BASE SCRATCH_BASE MODULE_LOAD KEEP_SCRATCH; do
+    for v in CLUSTER RUN_UUID IMAGE_NAME IMAGE_VERSION SIF_PATH SHARED_BASE SCRATCH_BASE MODULE_LOAD KEEP_SCRATCH OUTPUT_BIND; do
         printf '%s=%q\n' "$v" "${!v}"
     done
     printf 'WPS_GEOG_PATH=%q\n' "${SHARED_BASE}/WPS_GEOG"
@@ -238,6 +250,7 @@ echo "  job name:  ${JOB_NAME}"
 echo "  window:    $(date -u -d "@$(( START_S - BEGIN_H * 3600 ))" '+%F %T') -> $(date -u -d "@${END_S}" '+%F %T') (incl. ${BEGIN_H} h spin-up)"
 echo "  jobs:      ${N} = ${CHUNKS} chunks of ${INTERVAL} d + ${SPARES} spare(s); job 1 starts at once, the rest afterany"
 echo "  image:     ${SIF_PATH}"
+[ -z "${OUTPUT_BIND}" ] || echo "  output:    local ${OUTPUT_BIND} (bound into the container at the same path)"
 echo "  snapshot:  ${RUN_DIR}"
 [ ! -d "${HOOKS}" ] || echo "  hooks:     $(cd "${HOOKS}" && ls -1 | tr '\n' ' ')(pre stops the job on failure; post only warns)"
 [ "${#EXTRA_ENV[@]}" -eq 0 ] || echo "  [env]:     ${EXTRA_ENV[*]}"

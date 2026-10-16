@@ -798,11 +798,50 @@ def jobname_cases(E):
         check(f'job name: "{bad}" -> refused, zero sbatch', rc == 1 and not cl, out[-150:])
 
 
+def output_bind_cases(E):
+    """A LOCAL [remote.output] (rclone type 'local') is a host path the pipeline writes to from inside --contain: it
+    must be bound into the container at the same path, or rclone writes into the ~64 MB writable tmpfs and the first
+    restart upload fails 'file too big for remaining disk space' (terrain family on uc_rch, 2026-10-16)."""
+    def local_project(path, quote="'"):
+        p = E.project(extra='spares = 0')
+        s = (p / 'parameters.toml').read_text()
+        s = s.replace('type = "s3"', f'type = {quote}local{quote}').replace('path = "bkt/out"', f'path = {quote}{path}{quote}')
+        (p / 'parameters.toml').write_text(s)
+        return p
+    def bind_of():
+        appt = json.loads(E.appt.read_text().splitlines()[-1]) if E.appt.exists() else []
+        return appt[appt.index('--bind') + 1].split(',') if '--bind' in appt else []
+    out = E.tmp / 'outroot' / 'arm_a'
+    for i, (path, quote, label) in enumerate(((f'{out}/', "'", "single-quoted, trailing '/' (as gen.py writes it)"),
+                                              (f'{out}', '"', 'double-quoted, no trailing /'))):
+        p = local_project(path, quote)
+        rc, txt, cl = E.submit(p, now=f'20261017T00000{i}Z')
+        rd = pathlib.Path(re.search(r'snapshot:\s+(\S+)', txt).group(1)) if rc == 0 else None
+        jenv = (rd / 'job.env').read_text() if rd else ''
+        check(f'output bind: local remote, {label} -> job.env OUTPUT_BIND is the path without the trailing /',
+              rc == 0 and f'OUTPUT_BIND={out}\n' in jenv, txt[-200:] + jenv)
+        if rd is None:
+            continue
+        if out.exists():
+            shutil.rmtree(out)
+        res = run_job(E, rd / 'chunk.sl', rd, rd)
+        b = bind_of()
+        check(f'output bind: local remote, {label} -> the pipeline binds {out}:{out} and the folder exists [rclone writes into the tmpfs]',
+              res.returncode == 0 and b[-1] == f'{out}:{out}' and len(b) == 6 and out.is_dir(), (b, res.stdout[-200:]))
+    rd = make_run(E)
+    res = run_job(E, rd / 'chunk.sl', rd, rd, extra_env={'OUTPUT_BIND': str(out)})
+    check('output bind: an S3 remote -> job.env OUTPUT_BIND empty, and one leaking from the login shell is NOT bound',
+          'OUTPUT_BIND=\'\'' in (rd / 'job.env').read_text() and len(bind_of()) == 5, (bind_of(), (rd / 'job.env').read_text()))
+    for path, label in (('rel/out/', 'a relative path'), (f'{E.tmp}/a,b/', "a ','"), (f'{E.tmp}/a:b/', "a ':'"), ('/', 'the root /')):
+        rc, txt, cl = E.submit(local_project(path), now='20261017T000010Z')
+        check(f'output bind: local remote with {label} -> refused, zero sbatch', rc == 1 and not cl and 'remote.output' in txt, txt[-200:])
+
+
 def main():
     tmp = pathlib.Path(tempfile.mkdtemp(prefix='launcher_test_'))
     try:
         for fn in (count_cases, chain_cases, argv_cases, queue_cases, uuid_cases, snapshot_cases, env_cases,
-                   validation_cases, rollback_cases, runtime_cases, signal_cases, review_cases, runtime_more_cases, hook_cases, jobname_cases):
+                   validation_cases, rollback_cases, runtime_cases, signal_cases, review_cases, runtime_more_cases, hook_cases, jobname_cases, output_bind_cases):
             sub = tmp / fn.__name__
             sub.mkdir()
             fn(Env(sub))

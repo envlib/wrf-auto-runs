@@ -22,9 +22,10 @@ fi
 # SLURM_JOB_ID names the scratch dir that is later `rm -rf`ed; empty, it would be the whole scratch base.
 : "${SLURM_JOB_ID:?not running under Slurm}" "${SLURM_NTASKS:?no --ntasks in the allocation}"
 EXTRA_ENV=()                     # job.env sets it only when [env] is non-empty; never inherit one from the login shell
+OUTPUT_BIND=""                   # job.env sets it for a local [remote.output]; never inherit one from the login shell
 # shellcheck source=/dev/null
 source "${RUN_DIR}/job.env"      # CLUSTER RUN_UUID IMAGE_* SIF_PATH WPS_GEOG_PATH SHARED_BASE SCRATCH_BASE
-                                 # MODULE_LOAD KEEP_SCRATCH [EXTRA_ENV]
+                                 # MODULE_LOAD KEEP_SCRATCH OUTPUT_BIND [EXTRA_ENV]
 PARAMS_FILE="${RUN_DIR}/parameters.toml"
 LOCAL_SCRATCH="${SCRATCH_BASE}/${SLURM_JOB_ID}"
 
@@ -69,6 +70,12 @@ BIND_ARGS="${BIND_ARGS},${WPS_GEOG_PATH}:/WPS_GEOG:ro"
 BIND_ARGS="${BIND_ARGS},${LOCAL_SCRATCH}:/data"
 BIND_ARGS="${BIND_ARGS},/dev/shm:/dev/shm"
 BIND_ARGS="${BIND_ARGS},${LOCAL_SCRATCH}/apptainer_tmp:/tmp"
+# A local [remote.output] (rclone type 'local') is a host path: bound at the same path, or rclone writes into the
+# writable tmpfs and the first restart upload fails "file too big for remaining disk space".
+if [ -n "${OUTPUT_BIND}" ]; then
+    mkdir -p "${OUTPUT_BIND}"
+    BIND_ARGS="${BIND_ARGS},${OUTPUT_BIND}:${OUTPUT_BIND}"
+fi
 
 # ---- Env vars ---------------------------------------------------------------
 # n_cores_metgrid is deliberately NOT set here -- parameters.toml stays authoritative (a project can pass it
