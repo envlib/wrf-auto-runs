@@ -98,7 +98,7 @@ CFL blow-up does not heal on a rerun.
 Why: on clusters with shared scratch (`uc_rch`, NeSI), a transient ERA5 download fault occasionally killed a chunk at
 metgrid, and the next job's rerun of the same window always succeeded. Retrying in the job saves the requeue (6–21 h of
 queue on NeSI) and a spare. Two retries add up to ~2 × (35–50 min) before WRF starts, so the site's `--time` needs that
-much slack over a normal chunk.
+much slack over a normal chunk. C1 has it: a chunk takes ~11 h on `uc_rch` and 15–17 h on NeSI, against 24 h.
 
 ## Hooks (optional)
 
