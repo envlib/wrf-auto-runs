@@ -13,6 +13,7 @@ import numpy as np
 import h5netcdf
 
 import params
+import utils
 
 
 ############################################
@@ -57,10 +58,8 @@ def run_wrf_to_int(start_date, end_date, hour_interval, del_old=True):
     cmd_str = f'wrf_to_int {wrfout_path} -s "{start_date}" -e "{end_date}" -h {hour_interval} -d {domain} -l {pressure_levels}'
     cmd_list = shlex.split(cmd_str)
     p = subprocess.run(cmd_list, capture_output=True, text=True, check=False, cwd=params.data_path)
+    utils.check_returncode(p, 'wrf_to_int')
 
-    if len(p.stderr) > 0:
-        raise ValueError(p.stderr)
-    else:
-        if del_old:
-            shutil.rmtree(wrfout_path)
-        return True
+    if del_old:
+        shutil.rmtree(wrfout_path)
+    return True

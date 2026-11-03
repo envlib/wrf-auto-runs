@@ -528,6 +528,13 @@ def runtime_cases(E):
     check('runtime: upload failure (the pipeline\'s real message) with rc 0 -> scratch KEPT and the job exits 75 [reads as success]',
           res.returncode == 75 and scr.exists() and 'FAILED' in res.stdout, (res.returncode, res.stdout[-200:]))
     shutil.rmtree(scr, ignore_errors=True)
+    res = run_job(E, rd / 'chunk.sl', rd, rd, out='*** PREPROCESS ATTEMPT 1/3 FAILED for chunk a → b: RuntimeError: x\n'
+                                                   '-- PREPROCESS RECOVERED on attempt 2/3 for chunk a → b')
+    check('runtime: a recovered preprocessing retry -> exit 0, scratch removed, and a PREPROCESS RETRIES summary [evidence]',
+          res.returncode == 0 and not scr.exists() and 'PREPROCESS RETRIES: 1 failed attempt(s)' in res.stdout
+          and '    -- PREPROCESS RECOVERED on attempt 2/3' in res.stdout, res.stdout[-400:])
+    res = run_job(E, rd / 'chunk.sl', rd, rd)
+    check('runtime: no retry -> no PREPROCESS RETRIES line', 'PREPROCESS RETRIES' not in res.stdout, res.stdout[-200:])
     res = run_job(E, rd / 'chunk.sl', rd, rd, extra_env={'KEEP_SCRATCH': '1'})
     check('runtime: KEEP_SCRATCH=1 leaking from the login shell is ignored; job.env decides (removed) [stale export]', not scr.exists())
     rdk = make_run(E, keep=True)

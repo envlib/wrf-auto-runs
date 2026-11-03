@@ -67,7 +67,12 @@ def dl_era5(start_date, end_date, min_lon, min_lat, max_lon, max_lat):
 
     p = subprocess.run(cmd_parts, capture_output=True, text=True, check=False)
 
+    # Always into the job log: its NOTICE / FAILED lines name the step and the file, which is the only record of what
+    # the transfer did (a healthy run prints a few lines).
+    print(p.stdout.rstrip())
+    if p.stderr.strip():
+        print(f'era5_dl stderr:\n{p.stderr.rstrip()}')
     if p.returncode != 0:
-        raise RuntimeError(f'era5_dl failed ({p.returncode}):\nstdout:\n{p.stdout}\nstderr:\n{p.stderr}')
+        raise RuntimeError(f'era5_dl failed (exit {p.returncode}); its output is above')
 
     return True

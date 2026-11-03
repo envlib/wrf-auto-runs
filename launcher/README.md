@@ -78,6 +78,28 @@ too big for remaining disk space". An S3 output needs no bind. Scratch is kept w
 failed exits **75**, so `sacct` and mail-on-fail show it; the chain carries on, because the restart is a separate
 upload.
 
+### Preprocessing is retried inside the job; WRF is not
+
+The pipeline (`main.run_preprocess_with_retries`) runs a chunk's whole preprocessing sequence, geogrid through the
+namelist upload, up to **3 times**. Between attempts it prints `*** PREPROCESS ATTEMPT n/3 FAILED …` with the
+traceback, the ERA5 source and intermediate listings, and the tails of the `metgrid.log.*` files. It then deletes what
+the attempt left (`era5/`, `sst/`, `wrfout/`, `ERA5:*`, `SST:*`, `WRF:*`, `met_em.*`, `metgrid.log*`; `run_real` empties `run/` itself) and waits
+2 min. A recovery prints `-- PREPROCESS RECOVERED on attempt n/3`, and `chunk.sl` adds a `PREPROCESS RETRIES:` summary
+to the job log. The job log is the only record, because scratch is removed when the job then succeeds:
+
+```
+grep -l "PREPROCESS ATTEMPT" <project>/runs/*/log_chunk_*.log
+```
+
+A third failure fails the job as before, and the chain's next job reruns the chunk. Configuration checks run once,
+before the retry, so a config error fails at once. WRF itself is never retried in the job: a model failure such as a
+CFL blow-up does not heal on a rerun.
+
+Why: on clusters with shared scratch (`uc_rch`, NeSI), a transient ERA5 download fault occasionally killed a chunk at
+metgrid, and the next job's rerun of the same window always succeeded. Retrying in the job saves the requeue (6–21 h of
+queue on NeSI) and a spare. Two retries add up to ~2 × (35–50 min) before WRF starts, so the site's `--time` needs that
+much slack over a normal chunk.
+
 ## Hooks (optional)
 
 A project dir may hold a `hooks/` folder with `pre` and/or `post` (bash scripts) and any files they use. `submit`

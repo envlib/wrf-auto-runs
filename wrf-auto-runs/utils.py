@@ -44,6 +44,22 @@ def to_list(val):
     return val
 
 
+def check_returncode(p, what, stdout_tail=20):
+    """Judge a finished subprocess by its return code, never by an empty stderr.
+
+    rclone, ncks and the ERA5 tools write to stderr on success too (rclone logs a retried transfer as "Attempt 1/3
+    failed" and still exits 0), and era5_to_int < 0.5.0 reported a missing input on STDOUT and exited 1. So: a non-zero
+    exit raises with stderr and the last lines of stdout; stderr on a zero exit is printed as a notice.
+    """
+    if p.returncode != 0:
+        tail = '\n'.join((p.stdout or '').strip().splitlines()[-stdout_tail:])
+        raise RuntimeError(f'{what} failed (exit {p.returncode}).\n'
+                           f'stderr:\n{(p.stderr or "").strip()}\n'
+                           f'stdout (last {stdout_tail} lines):\n{tail}')
+    if (p.stderr or '').strip():
+        print(f'-- NOTICE: {what} exited 0 but wrote to stderr:\n{p.stderr.strip()}')
+
+
 def create_rclone_config(name, config_path, config_dict):
     """
 

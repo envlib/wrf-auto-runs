@@ -6,6 +6,9 @@ Created on Tue Sep 23 15:09:38 2025
 @author: mike
 """
 import os
+import shutil
+import time
+import traceback
 import uuid
 
 import pendulum
@@ -18,7 +21,7 @@ from run_era5_to_int import run_era5_to_int
 from process_sst_cci import process_sst_cci
 from download_wrf import dl_wrf
 from run_wrf_to_int import run_wrf_to_int
-from run_metgrid import run_metgrid
+from run_metgrid import run_metgrid, metgrid_log_report
 from run_real import run_real
 from monitor_wrf import monitor_wrf
 from upload_namelists import (
@@ -92,6 +95,163 @@ def _build_rename_dict(ndown_check, domains):
     return rename_dict
 
 
+PREPROCESS_ATTEMPTS = 3      # in all, i.e. two retries; a fixed cap, so a deterministic failure still fails
+RETRY_PAUSE_S = 120
+
+# What a failed preprocessing attempt can leave in data_path for the next attempt to consume. Everything else is
+# regenerated or overwritten before use (run_geogrid unlinks geo_em* first; the namelists, trmask and rclone configs
+# are rewritten; run_real empties run_path as its first step). met_em.* is load-bearing: run_real links every
+# ../met_em*, so a stale extra frame would reach real.exe. run_path is deliberately NOT cleaned here: in a looping run
+# (stop_after_upload = false) it can hold the previous chunk's only copy after a failed upload.
+_ATTEMPT_LEFTOVERS = ('era5', 'sst', 'wrfout', 'ERA5:*', 'SST:*', 'WRF:*', 'met_em.*', 'metgrid.log*')
+
+
+def preprocess_chunk(chunk_start, chunk_end, remaining_begin_h, restart_state, run_uuid, src_n_domains, domains_init):
+    """Every preprocessing step of one chunk, geogrid through the namelist upload. Safe to call again after a failure
+    once _clean_attempt has run: every input it reads is re-made here. Returns what monitor_wrf needs."""
+    params.set_chunk_dates(chunk_start, chunk_end, remaining_begin_h)
+
+    # First set_nml_params pass (matches existing pipeline)
+    if domains_init[0] == 1 and all([d - i == 1 for i, d in enumerate(domains_init)]):
+        _ = set_nml_params(domains_init)
+    else:
+        _ = set_nml_params()
+
+    print('-- Run geogrid.exe...')
+    min_lon, min_lat, max_lon, max_lat = run_geogrid(src_n_domains, domains_init)
+
+    # Second set_nml_params pass — returns chunk's start/end/outputs
+    start_date, end_date, hour_interval, outputs = set_nml_params(domains_init)
+
+    if params.file.get('dynamics', {}).get('tracer_opt', 0) == 4:
+        print('-- Creating WVT tracer mask files...')
+        create_trmask(domains_init, start_date)
+
+    if params.is_wrf_input:
+        print('-- Downloading WRF data...')
+        dl_wrf(start_date, end_date)
+        utils.check_input_extent('wrf', min_lon, min_lat, max_lon, max_lat)
+        print('-- Processing WRF to WPS Int...')
+        run_wrf_to_int(start_date, end_date, hour_interval, del_old=params.cleanup_inputs)
+    else:
+        # SST first: it needs only the dates and the box, and a gap in the CCI mirror is deterministic, so it fails
+        # here in minutes instead of after a full ERA5 download and conversion.
+        if params.sst_source == 'cci':
+            print('-- Processing CCI SST to WPS Int...')
+            process_sst_cci(start_date, end_date, hour_interval, min_lon, min_lat, max_lon, max_lat)
+        print('-- Downloading ERA5 data...')
+        dl_era5(start_date, end_date, min_lon, min_lat, max_lon, max_lat)
+        utils.check_input_extent('era5', min_lon, min_lat, max_lon, max_lat)
+        print('-- Processing ERA5 to WPS Int...')
+        run_era5_to_int(start_date, end_date, hour_interval, del_old=params.cleanup_inputs)
+
+    print('-- Running metgrid.exe...')
+    run_metgrid(del_old=params.cleanup_inputs)
+
+    print('-- Updating metgrid levels in namelist...')
+    update_metgrid_levels()
+
+    print('-- Running real.exe...')
+    run_real(run_uuid, del_old=params.cleanup_inputs)
+
+    # ---- Apply chunk-aware namelist edits (always, not just on restart chunks) ----
+    # apply_restart_namelist with restart_time=None still sets restart_interval / override_restart_timers /
+    # write_hist_at_0h_rst — which we need on the COLD START chunk too, otherwise WRF uses its default
+    # restart_interval of 500000 minutes (~347 days) and never writes a wrfrst within a 1-day chunk.
+    # On chunks 2+ we additionally download the prior wrfrst and apply restart=.true. + start_date* overrides.
+    #
+    # Derive restart_interval from the ACTUAL chunk length (chunk_end - chunk_start), not the static
+    # restart_interval_days. For full-length chunks the two are equal, but the final chunk is shorter
+    # (chunk_end = min(chunk_start + interval_days, sim_end)). If we used the static value, WRF would
+    # never write a wrfrst for the final partial chunk — and the next loop iteration's detect_remote_restart_state
+    # would still find only the previous chunk's wrfrst, so chunk_start < sim_end and the loop would rerun
+    # the final chunk forever.
+    interval_minutes = int((chunk_end - chunk_start).total_seconds() / 60)
+    if restart_state is not None:
+        print(f'-- Downloading wrfrst from S3 inputs/{run_uuid}/...')
+        download_wrfrst_to_run_path(run_uuid)
+    apply_restart_namelist(restart_state, interval_minutes, end_date_override=chunk_end)
+    if restart_state is not None:
+        print(f'-- Restarting from {restart_state}; chunk_end_override={chunk_end}, restart_interval={interval_minutes}min')
+    else:
+        print(f'-- Cold start chunk; restart_interval={interval_minutes}min, chunk_end_override={chunk_end}')
+
+    # ---- Upload namelist archive (the only S3 inputs/<run_uuid>/ persistence in unified mode) ----
+    print('-- Uploading chunk namelists for archival...')
+    upload_chunk_namelists(run_uuid)
+
+    return outputs, end_date
+
+
+def _attempt_evidence():
+    """What a failed attempt left: the ERA5 source and intermediate listings (a missing or short file is the C1
+    signature) and the metgrid log tails written during this attempt."""
+    lines = []
+    era5 = params.data_path.joinpath('era5')
+    src = sorted(f for f in era5.rglob('*.nc')) if era5.is_dir() else []
+    lines.append(f'   era5/: {len(src)} source files')
+    lines += [f'     {f.stat().st_size:>12d}  {f.relative_to(era5)}' for f in src]
+    ints = sorted(params.data_path.glob('ERA5:*'))
+    lines.append(f'   ERA5:* intermediates: {len(ints)}' + (f' ({ints[0].name} .. {ints[-1].name})' if ints else ''))
+    sizes = {f.stat().st_size for f in ints}
+    if len(sizes) > 1:   # healthy frames are all one size; list the odd ones out
+        common = max(sizes, key=lambda z: sum(f.stat().st_size == z for f in ints))
+        lines += [f'     {f.stat().st_size:>12d}  {f.name}  (others are {common})' for f in ints
+                  if f.stat().st_size != common]
+    report = metgrid_log_report()
+    if report:
+        lines.append(report)
+    return '\n'.join(lines)
+
+
+def _clean_attempt():
+    """Delete what a failed attempt left that the next one could consume (_ATTEMPT_LEFTOVERS)."""
+    for pattern in _ATTEMPT_LEFTOVERS:
+        for path in params.data_path.glob(pattern):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+
+
+def run_preprocess_with_retries(preprocess, chunk_start, chunk_end, attempts=PREPROCESS_ATTEMPTS,
+                                pause_s=RETRY_PAUSE_S):
+    """Run one chunk's preprocessing, retrying the WHOLE sequence from a clean slate on any exception.
+
+    A rerun of the same window has always succeeded on the clusters where a download fails transiently, while a
+    requeue costs a fresh preprocessing pass plus queue time. Each failed attempt's message, traceback and evidence go
+    to the job log first (chunk.sl deletes scratch when the job then succeeds). The last failure is re-raised, so a
+    deterministic fault still fails the job. WRF is not retried here.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            result = preprocess()
+        except Exception as exc:
+            print(f'*** PREPROCESS ATTEMPT {attempt}/{attempts} FAILED for chunk {chunk_start} → {chunk_end}: '
+                  f'{type(exc).__name__}: {exc}')
+            print(traceback.format_exc().rstrip())
+            try:                                          # the diagnostics must never stop the retry
+                print(_attempt_evidence())
+            except Exception as ev_exc:
+                print(f'   (evidence listing failed: {type(ev_exc).__name__}: {ev_exc})')
+            tags = {'preprocess_attempt': attempt, 'chunk_start': str(chunk_start)}
+            if attempt == attempts:
+                if params.is_sentry:                      # the exception propagates; Sentry's hook reports it
+                    sentry_sdk.set_tags(tags)
+                raise
+            if params.is_sentry:
+                with sentry_sdk.new_scope() as scope:
+                    scope.set_tags(tags)
+                    sentry_sdk.capture_exception(exc)
+            _clean_attempt()
+            print(f'-- retrying preprocessing in {pause_s} s')
+            time.sleep(pause_s)
+            continue
+        if attempt > 1:
+            print(f'-- PREPROCESS RECOVERED on attempt {attempt}/{attempts} for chunk {chunk_start} → {chunk_end}')
+        return result
+
+
 def run_chunked_pipeline(run_uuid):
     """Phase 3 unified per-chunk mode: preprocess + WRF for one chunk per iteration.
 
@@ -133,7 +293,7 @@ def run_chunked_pipeline(run_uuid):
         # set_params.set_nml_params from double-subtracting begin_hours from start_date.
         params.set_chunk_dates(chunk_start, chunk_end, remaining_begin_h)
 
-        # ---- Preprocess (existing pipeline functions, scoped to this chunk's window) ----
+        # ---- Validate the configuration ONCE, outside the retry: a config error is deterministic ----
         domains = _resolve_domains()
         # Unified per-chunk mode doesn't run ndown today, so we ignore ndown_mode /
         # nested_run_domains here. If multi-domain nested ndown ever lands in the chunked
@@ -143,72 +303,11 @@ def run_chunked_pipeline(run_uuid):
         if domains_init is None:
             domains_init = list(domains)
 
-        # First set_nml_params pass (matches existing pipeline)
-        if domains_init[0] == 1 and all([d - i == 1 for i, d in enumerate(domains_init)]):
-            _ = set_nml_params(domains_init)
-        else:
-            _ = set_nml_params()
-
-        print('-- Run geogrid.exe...')
-        min_lon, min_lat, max_lon, max_lat = run_geogrid(src_n_domains, domains_init)
-
-        # Second set_nml_params pass — returns chunk's start/end/outputs
-        start_date, end_date, hour_interval, outputs = set_nml_params(domains_init)
-
-        if params.file.get('dynamics', {}).get('tracer_opt', 0) == 4:
-            print('-- Creating WVT tracer mask files...')
-            create_trmask(domains_init, start_date)
-
-        if params.is_wrf_input:
-            print('-- Downloading WRF data...')
-            dl_wrf(start_date, end_date)
-            utils.check_input_extent('wrf', min_lon, min_lat, max_lon, max_lat)
-            print('-- Processing WRF to WPS Int...')
-            run_wrf_to_int(start_date, end_date, hour_interval, del_old=params.cleanup_inputs)
-        else:
-            print('-- Downloading ERA5 data...')
-            dl_era5(start_date, end_date, min_lon, min_lat, max_lon, max_lat)
-            utils.check_input_extent('era5', min_lon, min_lat, max_lon, max_lat)
-            print('-- Processing ERA5 to WPS Int...')
-            run_era5_to_int(start_date, end_date, hour_interval, del_old=params.cleanup_inputs)
-            if params.sst_source == 'cci':
-                print('-- Processing CCI SST to WPS Int...')
-                process_sst_cci(start_date, end_date, hour_interval, min_lon, min_lat, max_lon, max_lat)
-
-        print('-- Running metgrid.exe...')
-        run_metgrid(del_old=params.cleanup_inputs)
-
-        print('-- Updating metgrid levels in namelist...')
-        update_metgrid_levels()
-
-        print('-- Running real.exe...')
-        run_real(run_uuid, del_old=params.cleanup_inputs)
-
-        # ---- Apply chunk-aware namelist edits (always, not just on restart chunks) ----
-        # apply_restart_namelist with restart_time=None still sets restart_interval / override_restart_timers /
-        # write_hist_at_0h_rst — which we need on the COLD START chunk too, otherwise WRF uses its default
-        # restart_interval of 500000 minutes (~347 days) and never writes a wrfrst within a 1-day chunk.
-        # On chunks 2+ we additionally download the prior wrfrst and apply restart=.true. + start_date* overrides.
-        #
-        # Derive restart_interval from the ACTUAL chunk length (chunk_end - chunk_start), not the static
-        # restart_interval_days. For full-length chunks the two are equal, but the final chunk is shorter
-        # (chunk_end = min(chunk_start + interval_days, sim_end)). If we used the static value, WRF would
-        # never write a wrfrst for the final partial chunk — and the next loop iteration's detect_remote_restart_state
-        # would still find only the previous chunk's wrfrst, so chunk_start < sim_end and the loop would rerun
-        # the final chunk forever.
-        interval_minutes = int((chunk_end - chunk_start).total_seconds() / 60)
-        if restart_state is not None:
-            print(f'-- Downloading wrfrst from S3 inputs/{run_uuid}/...')
-            download_wrfrst_to_run_path(run_uuid)
-        apply_restart_namelist(restart_state, interval_minutes, end_date_override=chunk_end)
-        if restart_state is not None:
-            print(f'-- Restarting from {restart_state}; chunk_end_override={chunk_end}, restart_interval={interval_minutes}min')
-        else:
-            print(f'-- Cold start chunk; restart_interval={interval_minutes}min, chunk_end_override={chunk_end}')
-
-        # ---- Upload namelist archive (the only S3 inputs/<run_uuid>/ persistence in unified mode) ----
-        print('-- Uploading chunk namelists for archival...')
-        upload_chunk_namelists(run_uuid)
+        # ---- Preprocess, retried within the job (WRF is not) ----
+        outputs, end_date = run_preprocess_with_retries(
+            lambda: preprocess_chunk(chunk_start, chunk_end, remaining_begin_h, restart_state, run_uuid,
+                                     src_n_domains, domains_init),
+            chunk_start, chunk_end)
 
         # ---- Run WRF ----
         rename_dict = _build_rename_dict(ndown_check, domains)
@@ -227,158 +326,159 @@ def run_chunked_pipeline(run_uuid):
 ########################################
 ### Run sequence
 
-start_time = pendulum.now('UTC')
+if __name__ == '__main__':
+    start_time = pendulum.now('UTC')
 
-print(f'-- run uuid: {run_uuid}')
-print(f"-- start time: {start_time.format('YYYY-MM-DD HH:mm:ss')}")
+    print(f'-- run uuid: {run_uuid}')
+    print(f"-- start time: {start_time.format('YYYY-MM-DD HH:mm:ss')}")
 
-if params.restart_enable and not params.preprocess_only:
-    # Phase 3 unified per-chunk mode — preprocess + WRF in a single process per chunk,
-    # looped internally if stop_after_upload=false.
-    print('-- Mode: unified chunked (Phase 3) — preprocess + WRF per chunk in a single container')
-    run_chunked_pipeline(run_uuid)
-
-    end_time = pendulum.now('UTC')
-    print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
-    mins = round((end_time - start_time).total_minutes())
-    print(f"-- Total run minutes: {mins}")
-
-else:
-    domains = _resolve_domains()
-
-    ndown_check, ndown_mode, nested_run_domains, domains_init = check_ndown_params(domains)
-
-    src_n_domains, domains = check_nml_params(domains)
-
-    if domains_init is None:
-        domains_init = list(domains)
-
-    print(f'-- domains: {domains}')
-
-    if domains_init[0] == 1 and all([domain - i == 1 for i, domain in enumerate(domains_init)]):
-        _ = set_nml_params(domains_init)
-    else:
-        _ = set_nml_params()
-
-    print('-- Run geogrid.exe...')
-    min_lon, min_lat, max_lon, max_lat = run_geogrid(src_n_domains, domains_init)
-
-    print('-- Top domain bounds:')
-    print(min_lon, min_lat, max_lon, max_lat, sep=', ')
-
-    start_date, end_date, hour_interval, outputs = set_nml_params(domains_init)
-
-    print(f'start date: {start_date}, end date: {end_date}, input hour interval: {hour_interval}')
-
-    if params.file.get('dynamics', {}).get('tracer_opt', 0) == 4:
-        print('-- Creating WVT tracer mask files...')
-        create_trmask(domains_init, start_date)
-
-    if ndown_check:
-        print('-- ndown has been selected and the prior wrfout files will be downloaded...')
-        dl_ndown_input(domains_init[0], start_date, end_date)
-
-    if params.input_kind == 'intermediate':
-        # Pre-staged WPS intermediate files (an external tool wrote <prefix>:<date> into data_path);
-        # nothing to download or convert, and the staging tool owns the extent check.
-        staged = sorted(params.data_path.glob(f'{params.input_prefix}:*'))
-        if not staged:
-            raise FileNotFoundError(
-                f'[input].kind = "intermediate" but no {params.input_prefix}:* files are in {params.data_path}'
-            )
-        print(f'-- Using {len(staged)} pre-staged {params.input_prefix}:* intermediate files '
-              f'({staged[0].name} .. {staged[-1].name})')
-    elif params.is_wrf_input:
-        print('-- Downloading WRF data...')
-        dl_wrf(start_date, end_date)
-
-        print('-- Checking input data coverage...')
-        utils.check_input_extent('wrf', min_lon, min_lat, max_lon, max_lat)
-
-        print('-- Processing WRF to WPS Int...')
-        run_wrf_to_int(start_date, end_date, hour_interval, del_old=params.cleanup_inputs)
-    else:
-        print('-- Downloading ERA5 data...')
-        dl_era5(start_date, end_date, min_lon, min_lat, max_lon, max_lat)
-
-        print('-- Checking input data coverage...')
-        utils.check_input_extent('era5', min_lon, min_lat, max_lon, max_lat)
-
-        print('-- Processing ERA5 to WPS Int...')
-        run_era5_to_int(start_date, end_date, hour_interval, del_old=params.cleanup_inputs)
-
-        if params.sst_source == 'cci':
-            print('-- Processing CCI SST to WPS Int...')
-            process_sst_cci(start_date, end_date, hour_interval,
-                            min_lon, min_lat, max_lon, max_lat)
-
-    print('-- Running metgrid.exe...')
-    run_metgrid(del_old=params.cleanup_inputs)
-
-    print('-- Updating metgrid levels in namelist...')
-    update_metgrid_levels()
-
-    print('-- Running real.exe...')
-    run_real(run_uuid, del_old=params.cleanup_inputs)
-
-    if ndown_check:
-
-        print(f'-- Running ndown.exe (mode={ndown_mode})...')
-        if ndown_mode == "single":
-            ndown_interval = run_ndown(run_uuid, mode="single", del_old=params.cleanup_inputs)
-            start_date, end_date, hour_interval, outputs = set_nml_params(domains)
-            set_ndown_params(ndown_interval)
-            rename_dict = {'_d01_': f'_d{domains[-1]:02d}_'}
-        else:  # "nested-run"
-            ndown_interval = run_ndown(
-                run_uuid,
-                mode="nested-run",
-                post_n_domains=len(nested_run_domains),
-                del_old=params.cleanup_inputs,
-            )
-            # Rebuild namelist for the post-ndown nested wrf.exe run. set_nml_params
-            # slices and renumbers per-domain TOML arrays via update_geogrid /
-            # broadcast_field, and sets input_from_file = [True] * n_domains so the
-            # inner nest reads its IC from its own wrfinput_d0N (produced by real.exe
-            # in the upstream metgrid+real pass, then renumbered by run_ndown's
-            # _promote_after_nested_ndown).
-            start_date, end_date, hour_interval, outputs = set_nml_params(nested_run_domains)
-            set_ndown_params(ndown_interval)
-            rename_dict = {
-                f'_d{i+1:02d}_': f'_d{d:02d}_' for i, d in enumerate(nested_run_domains)
-            }
-
-    else:
-        rename_dict = _build_rename_dict(ndown_check, domains)
-
-    if params.preprocess_only:
-        print('-- preprocess_only=true: preprocessing complete; inputs left in run_path. Exit.')
+    if params.restart_enable and not params.preprocess_only:
+        # Phase 3 unified per-chunk mode — preprocess + WRF in a single process per chunk,
+        # looped internally if stop_after_upload=false.
+        print('-- Mode: unified chunked (Phase 3) — preprocess + WRF per chunk in a single container')
+        run_chunked_pipeline(run_uuid)
 
         end_time = pendulum.now('UTC')
-
         print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
-
         mins = round((end_time - start_time).total_minutes())
-
         print(f"-- Total run minutes: {mins}")
+
     else:
-        start_time2 = pendulum.now('UTC')
+        domains = _resolve_domains()
 
-        print('-- Running WRF...')
-        monitor_wrf(outputs, end_date, run_uuid, rename_dict)
+        ndown_check, ndown_mode, nested_run_domains, domains_init = check_ndown_params(domains)
 
-        end_time = pendulum.now('UTC')
+        src_n_domains, domains = check_nml_params(domains)
 
-        print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
+        if domains_init is None:
+            domains_init = list(domains)
 
-        diff = end_time - start_time
+        print(f'-- domains: {domains}')
 
-        mins = round(diff.total_minutes())
+        if domains_init[0] == 1 and all([domain - i == 1 for i, domain in enumerate(domains_init)]):
+            _ = set_nml_params(domains_init)
+        else:
+            _ = set_nml_params()
 
-        print(f"-- Total run minutes: {mins}")
+        print('-- Run geogrid.exe...')
+        min_lon, min_lat, max_lon, max_lat = run_geogrid(src_n_domains, domains_init)
 
-        diff = end_time - start_time2
+        print('-- Top domain bounds:')
+        print(min_lon, min_lat, max_lon, max_lat, sep=', ')
 
-        mins = round(diff.total_minutes())
+        start_date, end_date, hour_interval, outputs = set_nml_params(domains_init)
 
-        print(f"-- WRF run minutes: {mins}")
+        print(f'start date: {start_date}, end date: {end_date}, input hour interval: {hour_interval}')
+
+        if params.file.get('dynamics', {}).get('tracer_opt', 0) == 4:
+            print('-- Creating WVT tracer mask files...')
+            create_trmask(domains_init, start_date)
+
+        if ndown_check:
+            print('-- ndown has been selected and the prior wrfout files will be downloaded...')
+            dl_ndown_input(domains_init[0], start_date, end_date)
+
+        if params.input_kind == 'intermediate':
+            # Pre-staged WPS intermediate files (an external tool wrote <prefix>:<date> into data_path);
+            # nothing to download or convert, and the staging tool owns the extent check.
+            staged = sorted(params.data_path.glob(f'{params.input_prefix}:*'))
+            if not staged:
+                raise FileNotFoundError(
+                    f'[input].kind = "intermediate" but no {params.input_prefix}:* files are in {params.data_path}'
+                )
+            print(f'-- Using {len(staged)} pre-staged {params.input_prefix}:* intermediate files '
+                  f'({staged[0].name} .. {staged[-1].name})')
+        elif params.is_wrf_input:
+            print('-- Downloading WRF data...')
+            dl_wrf(start_date, end_date)
+
+            print('-- Checking input data coverage...')
+            utils.check_input_extent('wrf', min_lon, min_lat, max_lon, max_lat)
+
+            print('-- Processing WRF to WPS Int...')
+            run_wrf_to_int(start_date, end_date, hour_interval, del_old=params.cleanup_inputs)
+        else:
+            print('-- Downloading ERA5 data...')
+            dl_era5(start_date, end_date, min_lon, min_lat, max_lon, max_lat)
+
+            print('-- Checking input data coverage...')
+            utils.check_input_extent('era5', min_lon, min_lat, max_lon, max_lat)
+
+            print('-- Processing ERA5 to WPS Int...')
+            run_era5_to_int(start_date, end_date, hour_interval, del_old=params.cleanup_inputs)
+
+            if params.sst_source == 'cci':
+                print('-- Processing CCI SST to WPS Int...')
+                process_sst_cci(start_date, end_date, hour_interval,
+                                min_lon, min_lat, max_lon, max_lat)
+
+        print('-- Running metgrid.exe...')
+        run_metgrid(del_old=params.cleanup_inputs)
+
+        print('-- Updating metgrid levels in namelist...')
+        update_metgrid_levels()
+
+        print('-- Running real.exe...')
+        run_real(run_uuid, del_old=params.cleanup_inputs)
+
+        if ndown_check:
+
+            print(f'-- Running ndown.exe (mode={ndown_mode})...')
+            if ndown_mode == "single":
+                ndown_interval = run_ndown(run_uuid, mode="single", del_old=params.cleanup_inputs)
+                start_date, end_date, hour_interval, outputs = set_nml_params(domains)
+                set_ndown_params(ndown_interval)
+                rename_dict = {'_d01_': f'_d{domains[-1]:02d}_'}
+            else:  # "nested-run"
+                ndown_interval = run_ndown(
+                    run_uuid,
+                    mode="nested-run",
+                    post_n_domains=len(nested_run_domains),
+                    del_old=params.cleanup_inputs,
+                )
+                # Rebuild namelist for the post-ndown nested wrf.exe run. set_nml_params
+                # slices and renumbers per-domain TOML arrays via update_geogrid /
+                # broadcast_field, and sets input_from_file = [True] * n_domains so the
+                # inner nest reads its IC from its own wrfinput_d0N (produced by real.exe
+                # in the upstream metgrid+real pass, then renumbered by run_ndown's
+                # _promote_after_nested_ndown).
+                start_date, end_date, hour_interval, outputs = set_nml_params(nested_run_domains)
+                set_ndown_params(ndown_interval)
+                rename_dict = {
+                    f'_d{i+1:02d}_': f'_d{d:02d}_' for i, d in enumerate(nested_run_domains)
+                }
+
+        else:
+            rename_dict = _build_rename_dict(ndown_check, domains)
+
+        if params.preprocess_only:
+            print('-- preprocess_only=true: preprocessing complete; inputs left in run_path. Exit.')
+
+            end_time = pendulum.now('UTC')
+
+            print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
+
+            mins = round((end_time - start_time).total_minutes())
+
+            print(f"-- Total run minutes: {mins}")
+        else:
+            start_time2 = pendulum.now('UTC')
+
+            print('-- Running WRF...')
+            monitor_wrf(outputs, end_date, run_uuid, rename_dict)
+
+            end_time = pendulum.now('UTC')
+
+            print(f"-- end time: {end_time.format('YYYY-MM-DD HH:mm:ss')}")
+
+            diff = end_time - start_time
+
+            mins = round(diff.total_minutes())
+
+            print(f"-- Total run minutes: {mins}")
+
+            diff = end_time - start_time2
+
+            mins = round(diff.total_minutes())
+
+            print(f"-- WRF run minutes: {mins}")

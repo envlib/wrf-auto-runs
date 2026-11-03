@@ -140,6 +140,17 @@ if grep -q -- '-- Upload FAILED' "${PIPE_LOG}" 2>/dev/null; then
     echo "    (rclone copy with the [remote.output] remote) BEFORE this scratch is reused."
 fi
 
+# A preprocessing step that failed and then succeeded on an in-job retry (main.run_preprocess_with_retries) is a
+# degraded success: the chunk is fine, but every occurrence is evidence for the transient faults behind it (the C1
+# metgrid failures on shared-filesystem clusters). Summarise it here, where `grep -l "PREPROCESS" runs/*/log_chunk_*.log`
+# finds it, because scratch is removed on success.
+N_PRE=$(grep -c -- '\*\*\* PREPROCESS ATTEMPT' "${PIPE_LOG}" 2>/dev/null || true)
+if [ "${N_PRE:-0}" -gt 0 ]; then
+    echo ""
+    echo "PREPROCESS RETRIES: ${N_PRE} failed attempt(s) in this job"
+    grep -e '\*\*\* PREPROCESS ATTEMPT' -e '-- PREPROCESS RECOVERED' "${PIPE_LOG}" | sed 's/^/    /' || true
+fi
+
 # ---- Scratch lifecycle ------------------------------------------------------
 # Clean on success; RETAIN on failure (a metgrid failure uploads nothing, and metgrid.log here is the only
 # evidence). submit --keep-scratch retains it regardless.
@@ -152,7 +163,7 @@ else
         echo "  upload failed    -> ${LOCAL_SCRATCH}/run/wrfout_d0*  IS THE ONLY COPY"
     fi
     if [ "${RC}" -ne 0 ]; then
-        echo "  metgrid failure  -> ${LOCAL_SCRATCH}/metgrid.log   (NOT uploaded to S3)"
+        echo "  metgrid failure  -> ${LOCAL_SCRATCH}/metgrid.log*  (one per rank; NOT uploaded to S3)"
         echo "  real/wrf failure -> ${LOCAL_SCRATCH}/run/rsl.error.*  (also under logs/<run_uuid>/)"
     fi
 fi

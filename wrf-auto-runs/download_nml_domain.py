@@ -46,10 +46,9 @@ def dl_nml_domain():
     # for file_path in params.data_path.iterdir():
     #     if file_path.is_file():
     #         file_path.unlink()
-    if p.stderr != '':
-        raise ValueError(p.stderr)
-    else:
-        return True
+    utils.check_returncode(p, 'rclone copy of the project domain files')
+
+    return True
 
 
 

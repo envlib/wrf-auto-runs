@@ -74,15 +74,13 @@ def dl_ndown_input(new_top_domain, start_date, end_date):
     cmd_str = f'rclone copy {src_str} {params.data_path} --transfers=4 --config={config_path} --include-from -'
     cmd_list = shlex.split(cmd_str)
     p = subprocess.run(cmd_list, input=download_from, capture_output=True, text=True, check=False)
+    utils.check_returncode(p, 'rclone copy of the ndown input')
 
-    if len(p.stderr) > 0:
-        raise ValueError(p.stderr)
-    else:
-        for file in file_list:
-            file_path = params.data_path.joinpath(file)
-            new_file = 'wrfout_d01' + file[10:]
-            new_file_path = params.data_path.joinpath(new_file)
-            os.rename(file_path, new_file_path)
+    for file in file_list:
+        file_path = params.data_path.joinpath(file)
+        new_file = 'wrfout_d01' + file[10:]
+        new_file_path = params.data_path.joinpath(new_file)
+        os.rename(file_path, new_file_path)
 
     return True
 

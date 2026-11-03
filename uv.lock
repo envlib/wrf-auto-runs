@@ -507,7 +507,7 @@ wheels = [
 
 [[package]]
 name = "era5-s3-dl"
-version = "0.2.1"
+version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pendulum" },
@@ -515,21 +515,21 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9a/26/e4c22146ec3c9cebf2cd4b0498d7a7748a6d5576964d5ecbf497cee1207f/era5_s3_dl-0.2.1.tar.gz", hash = "sha256:d4ce477f3a1199866c530e4210afac62a57919d4089f20f1025e08ec55693635", size = 17199, upload-time = "2026-04-29T23:35:04.957Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/02/cc/2b3dc1ce5d159fae551268b64817adb44d3c7bb90ae1ef964e136d33f802/era5_s3_dl-0.2.2.tar.gz", hash = "sha256:517c68f6db1a6ea93abe6a4fa5a840bb7d60fd0cc4d2437aa0a4ba6cc7f8879c", size = 18550, upload-time = "2026-11-02T23:19:03.35Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/2f/a6cd106cfecd5a586980500f4f20f8fad7b3872bc968c9cc24edc7dcbc5b/era5_s3_dl-0.2.1-py3-none-any.whl", hash = "sha256:842fcb68f13e24791e5bef1b75e5676018387534e544a868f2594884ee3d75dd", size = 16369, upload-time = "2026-04-29T23:35:03.314Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/93/187c861d8b891f87be08e15d6961c0a8ac9658f608cf4e0004f07f35001b/era5_s3_dl-0.2.2-py3-none-any.whl", hash = "sha256:034fec5cbc4b6a0379fdbd00bc95563113b110ee8c995a4b3e52781d44e237a8", size = 17725, upload-time = "2026-11-02T23:19:01.99Z" },
 ]
 
 [[package]]
 name = "era5-to-int"
-version = "0.4.0"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "wrf-to-int" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/04/3f/bcc2b5ad4f5d151283171faf41e70f88368e464e78e5fa551a629c0126a4/era5_to_int-0.4.0.tar.gz", hash = "sha256:1ca99dc1bd9943a914b5776dc5f87c7aefc590f8ec2888eeb4dfc3be9965359d", size = 23393, upload-time = "2026-04-20T22:37:21.832Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/0a/85a6d2b70c0c18c51d26d9138aa9a84dd4e7282b9d815f59d6fe9874eecb/era5_to_int-0.5.0.tar.gz", hash = "sha256:fd3fa08dc55f7d29820854ea25f8fa802c510f7b3bf2993a300c56bc8361943c", size = 26849, upload-time = "2026-11-02T23:19:58.768Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/ac/4c80fd5a535d510142b95996600cb6a2961c2817cf2056946ddd8fb236d8/era5_to_int-0.4.0-py3-none-any.whl", hash = "sha256:1c678d5e1dcd6b845f532af321de63d84cd5369b05fd0d8070a354f5b17cb1ac", size = 22512, upload-time = "2026-04-20T22:37:20.538Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/d4/d2401f5aac027ece55bf34836e32a97f4b5177191883dc72250ec38290e0/era5_to_int-0.5.0-py3-none-any.whl", hash = "sha256:3af864f34a056aa9442caa681ae4de9a1e070d2fec018e28f567bb64559481cc", size = 26205, upload-time = "2026-11-02T23:19:57.376Z" },
 ]
 
 [[package]]
@@ -1979,8 +1979,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "era5-s3-dl", specifier = "==0.2.1" },
-    { name = "era5-to-int", specifier = "==0.4.0" },
+    { name = "era5-s3-dl", specifier = "==0.2.2" },
+    { name = "era5-to-int", specifier = "==0.5.0" },
     { name = "f90nml", specifier = "==1.4.5" },
     { name = "h5netcdf", specifier = "==1.6.3" },
     { name = "pendulum", specifier = "==3.1.0" },

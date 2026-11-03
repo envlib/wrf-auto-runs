@@ -66,8 +66,6 @@ def dl_wrf(start_date, end_date):
     cmd_str = f'rclone copy {src_str} {params.data_path}/wrfout --transfers=4 --config={config_path} --include-from -'
     cmd_list = shlex.split(cmd_str)
     p = subprocess.run(cmd_list, input=download_from, capture_output=True, text=True, check=False)
+    utils.check_returncode(p, 'rclone copy of the wrfout input')
 
-    if p.stderr != '':
-        raise ValueError(p.stderr)
-    else:
-        return True
+    return True
