@@ -14,8 +14,11 @@ shared_base  = "/shared/wrf_data"
 scratch_base = "/var/tmp/wrf_scratch"
 module_load  = ""
 
+# NeSI genoa (checked 2026-11-10): Slurm reports a node as 8 "sockets" x 21 cores (sinfo S:C:T 8:21:2), so a
+# --ntasks-per-socket above 21 is refused with "Requested node configuration is not available". WRF is memory-bandwidth
+# bound, so spread the ranks over all 8 blocks: 48 ranks = 6 per socket. One rank per physical core.
 [hpc_example]
-sbatch_args  = "--account=nesi99999 --partition=compute --time=24:00:00 --ntasks=48 --mem=64G --cpus-per-task=1"
+sbatch_args  = "--account=nesi99999 --partition=genoa --time=24:00:00 --ntasks=48 --ntasks-per-socket=6 --mem=96G --cpus-per-task=1 --hint=nomultithread --ntasks-per-core=1"
 shared_base  = "/nobackup/nesi99999/<<<USERNAME>>>"
 scratch_base = "/nobackup/nesi99999/<<<USERNAME>>>/wrf_runs"
 module_load  = "Apptainer"
