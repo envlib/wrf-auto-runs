@@ -85,16 +85,6 @@ def _resolve_domains():
     return domains
 
 
-def _build_rename_dict(ndown_check, domains):
-    """Mirror main.py's per-domain rename map (post-pipeline lines that build rename_dict)."""
-    if ndown_check:
-        return {'_d01_': f'_d{domains[-1]:02d}_'}
-    rename_dict = {}
-    for i, domain in enumerate(domains):
-        rename_dict[f'_d{i+1:02d}_'] = f'_d{domain:02d}_'
-    return rename_dict
-
-
 PREPROCESS_ATTEMPTS = 3      # in all, i.e. two retries; a fixed cap, so a deterministic failure still fails
 RETRY_PAUSE_S = 120
 
@@ -302,6 +292,8 @@ def run_chunked_pipeline(run_uuid):
         src_n_domains, domains = check_nml_params(domains)
         if domains_init is None:
             domains_init = list(domains)
+        rename_dict = utils.output_rename_dict(ndown_check, domains)
+        utils.check_hook_reaches_output(params.output_hook, rename_dict, params.file)
 
         # ---- Preprocess, retried within the job (WRF is not) ----
         outputs, end_date = run_preprocess_with_retries(
@@ -310,7 +302,6 @@ def run_chunked_pipeline(run_uuid):
             chunk_start, chunk_end)
 
         # ---- Run WRF ----
-        rename_dict = _build_rename_dict(ndown_check, domains)
         print('-- Running WRF...')
         monitor_wrf(outputs, end_date, run_uuid, rename_dict, chunk_end=chunk_end)
 
@@ -352,6 +343,11 @@ if __name__ == '__main__':
 
         if domains_init is None:
             domains_init = list(domains)
+
+        # The delivered-name map for every mode (nested_run_domains is None unless ndown is nested-run),
+        # built before WPS so a hook that could never fire is refused while it costs nothing.
+        rename_dict = utils.output_rename_dict(ndown_check, domains, nested_run_domains)
+        utils.check_hook_reaches_output(params.output_hook, rename_dict, params.file)
 
         print(f'-- domains: {domains}')
 
@@ -428,7 +424,6 @@ if __name__ == '__main__':
                 ndown_interval = run_ndown(run_uuid, mode="single", del_old=params.cleanup_inputs)
                 start_date, end_date, hour_interval, outputs = set_nml_params(domains)
                 set_ndown_params(ndown_interval)
-                rename_dict = {'_d01_': f'_d{domains[-1]:02d}_'}
             else:  # "nested-run"
                 ndown_interval = run_ndown(
                     run_uuid,
@@ -444,12 +439,7 @@ if __name__ == '__main__':
                 # _promote_after_nested_ndown).
                 start_date, end_date, hour_interval, outputs = set_nml_params(nested_run_domains)
                 set_ndown_params(ndown_interval)
-                rename_dict = {
-                    f'_d{i+1:02d}_': f'_d{d:02d}_' for i, d in enumerate(nested_run_domains)
-                }
-
-        else:
-            rename_dict = _build_rename_dict(ndown_check, domains)
+        # rename_dict: built with the hook check, before WPS (utils.output_rename_dict covers every mode)
 
         if params.preprocess_only:
             print('-- preprocess_only=true: preprocessing complete; inputs left in run_path. Exit.')

@@ -5,8 +5,10 @@ are real processes so the signal path is exercised for real.
 """
 
 import os
+import pathlib
 import sys
 import textwrap
+import tomllib
 import types
 
 import pytest
@@ -277,3 +279,84 @@ def test_failed_file_is_not_rehooked_every_poll_but_once_post_run(tmp_path, monk
     assert log.read_text() == 'x'  # hooked once, then skipped
     assert utils.hook_output_files([f], retry_failed=True) == [f]  # the post-run pass retries once
     assert log.read_text() == 'xx' and os.path.exists(f)
+
+
+# ---------------------------------------------------------------- delivered names: the hook sees the [domains].run ids
+# wrf.exe numbers the domains it runs d01..dN; delivery renames them back to the user's ids (run = [2]: d01 -> d02).
+# A hook pattern written against the wrong side never fires, and nothing reports it (wrf-3km-0p1-plan-1, 2026-11-10).
+
+TC_HISTORY_ONLY = {'time_control': {'summary_file': {'output': False}}}
+
+
+@pytest.mark.parametrize('ndown, domains, nested, want', [
+    (False, [1, 2], None, {'_d01_': '_d01_', '_d02_': '_d02_'}),
+    (False, [2], None, {'_d01_': '_d02_'}),
+    (False, [2, 3], None, {'_d01_': '_d02_', '_d02_': '_d03_'}),
+    (True, [3], None, {'_d01_': '_d03_'}),                                    # ndown single: the target alone
+    (True, [2, 3], [2, 3], {'_d01_': '_d02_', '_d02_': '_d03_'}),             # ndown nested-run
+])
+def test_output_rename_dict_maps_wrf_positions_to_run_ids(ndown, domains, nested, want):
+    assert utils.output_rename_dict(ndown, domains, nested) == want
+
+
+@pytest.mark.parametrize('rename_dict', [
+    {'_d01_': '_d02_'}, {'_d01_': '_d01_', '_d02_': '_d02_'}, {'_d01_': '_d02_', '_d02_': '_d03_'}, {'_d01_': '_d03_'},
+])
+def test_predicted_names_are_the_names_delivery_produces(tmp_path, rename_dict):
+    """The prediction and the real rename agree: each file wrf.exe writes, renamed on disk by rename_files."""
+    written = [str(tmp_path / f'wrfout_d{int(k[2:4]):02d}_2000-01-01_00:00:00.nc') for k in rename_dict]
+    for f in written:
+        open(f, 'w').write('x')
+    on_disk = sorted(os.path.basename(f) for f in utils.rename_files(written, utils.delivery_rename_dict(rename_dict)))
+    assert sorted(utils.delivered_output_names(rename_dict, TC_HISTORY_ONLY)) == on_disk
+
+
+@pytest.mark.parametrize('match, rename_dict, file, fires', [
+    ('wrfout_d02_*', {'_d01_': '_d02_'}, TC_HISTORY_ONLY, True),               # run = [2]: delivered as d02
+    ('wrfout_d01_*', {'_d01_': '_d02_'}, TC_HISTORY_ONLY, False),              # ... never as d01
+    ('wrfout_d02_*', {'_d01_': '_d01_', '_d02_': '_d02_'}, TC_HISTORY_ONLY, True),
+    ('wrfout_d0[12]_*', {'_d01_': '_d01_', '_d02_': '_d02_'}, TC_HISTORY_ONLY, True),
+    ('wrfout_d03_*', {'_d01_': '_d03_'}, TC_HISTORY_ONLY, True),               # ndown single
+    ('wrfout_d01_*', {'_d01_': '_d03_'}, TC_HISTORY_ONLY, False),
+    ('*', {'_d01_': '_d02_'}, TC_HISTORY_ONLY, True),
+    ('wrfout_d02_*_00:00:00.nc', {'_d01_': '_d02_'}, TC_HISTORY_ONLY, False),  # the colon rule applies before the hook
+    ('wrfxtrm_d02_*', {'_d01_': '_d02_'}, TC_HISTORY_ONLY, False),             # summaries off: no wrfxtrm delivered
+    ('wrfxtrm_d02_*', {'_d01_': '_d02_'}, {'time_control': {'summary_file': {'output': True}}}, True),
+])
+def test_hook_that_can_never_fire_is_refused(match, rename_dict, file, fires):
+    hook = _hook('true {path}', match=match)
+    if fires:
+        utils.check_hook_reaches_output(hook, rename_dict, file)
+    else:
+        with pytest.raises(ValueError, match='never fire'):
+            utils.check_hook_reaches_output(hook, rename_dict, file)
+
+
+def test_no_hook_is_never_refused():
+    utils.check_hook_reaches_output(None, {'_d01_': '_d02_'}, TC_HISTORY_ONLY)
+
+
+def test_subset_run_delivers_original_id_to_the_hook(tmp_path, monkeypatch, no_sentry):
+    """The seam production uses: under run = [2] wrf.exe writes wrfout_d01_*; the hook receives wrfout_d02_*."""
+    import monitor_wrf
+    f = str(tmp_path / 'wrfout_d01_2026-11-04_00:00:00.nc')
+    open(f, 'w').write('x')
+    monkeypatch.setattr(params, 'file', {'time_control': {'history_file': {}}})
+    log = tmp_path / 'seen.txt'
+    monkeypatch.setattr(params, 'output_hook', _ok_hook(tmp_path, log))
+    rules = utils.delivery_rename_dict(utils.output_rename_dict(False, [2]))
+    monitor_wrf.deliver_output_files([f], str(tmp_path), rules, None, None)
+    assert log.read_text().strip() == 'wrfout_d02_2026-11-04_00_00_00.nc'
+
+
+FORECAST_PROJECTS = sorted(pathlib.Path('~/git/wrf-repos/wrf-runs/projects/forecasts').expanduser().glob('*/parameters.toml'))
+
+
+@pytest.mark.skipif(not FORECAST_PROJECTS, reason='the wrf-runs forecast projects are not checked out beside this repo')
+@pytest.mark.parametrize('path', FORECAST_PROJECTS, ids=lambda p: p.parent.name)
+def test_ok_real_forecast_configs_pass(path):
+    """Controls: every real config with [hooks] passes the refusal (a new refusal must not refuse production)."""
+    cfg = tomllib.loads(path.read_text())
+    hook = params._parse_hooks(cfg.get('hooks', {}))
+    run = cfg['domains']['run']
+    utils.check_hook_reaches_output(hook, utils.output_rename_dict('ndown' in cfg, run if isinstance(run, list) else [run]), cfg)

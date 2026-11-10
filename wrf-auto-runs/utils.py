@@ -230,6 +230,83 @@ def select_files_to_ul(out_files, min_files, wrfxtrm_skip_newest=False):
     return files
 
 
+def output_rename_dict(ndown_check, domains, nested_run_domains=None):
+    """
+    The map from the names wrf.exe writes (its domains numbered d01..dN) to the names the pipeline
+    delivers (the user's [domains].run ids). The ONE builder: main.py uses it at every construction
+    site, and check_hook_reaches_output uses it to predict the delivered names, so the two cannot drift.
+
+    - plain run or subset: position i+1 -> domains[i]  (run = [2]: wrf.exe writes d01, delivered as d02)
+    - ndown "single": wrf.exe runs the target alone as d01 -> domains[-1]
+    - ndown "nested-run" (nested_run_domains given): position i+1 -> nested_run_domains[i]
+    """
+    if ndown_check and nested_run_domains:
+        return {f'_d{i + 1:02d}_': f'_d{d:02d}_' for i, d in enumerate(nested_run_domains)}
+    if ndown_check:
+        return {'_d01_': f'_d{domains[-1]:02d}_'}
+    return {f'_d{i + 1:02d}_': f'_d{d:02d}_' for i, d in enumerate(domains)}
+
+
+def delivery_rename_dict(rename_dict):
+    """``rename_dict`` plus the colon rule every delivered file gets (see monitor_wrf.monitor_wrf)."""
+    return {**rename_dict, ':': '_'}
+
+
+def renamed_name(file_name, rename_dict):
+    """One file name through ``rename_dict``. Each rule tests the ORIGINAL name (rename_files, property 1)."""
+    new_file_name = file_name
+    for orig, new in rename_dict.items():
+        if orig in file_name:
+            new_file_name = new_file_name.replace(orig, new)
+    return new_file_name
+
+
+def enabled_output_prefixes(file):
+    """The output streams this config writes: wrfout always, the others when their block says output = true."""
+    tc = file.get('time_control', {})
+    prefixes = []
+    for name, stream in defaults.OUTPUT_STREAMS.items():
+        if name == 'history' or tc.get(stream['block'], {}).get('output'):
+            prefixes.append(stream['prefix'])
+    return prefixes
+
+
+def delivered_output_names(rename_dict, file, date=datetime.datetime(2000, 1, 1)):
+    """
+    One delivered name per (enabled stream, wrf.exe domain) at ``date``: the name wrf.exe writes for each
+    key of ``rename_dict`` (d01..dN), passed through the delivery rename (monitor_wrf's colon rule included).
+    """
+    rules = delivery_rename_dict(rename_dict)
+    date_str = date.strftime(params.wps_date_format)
+    names = []
+    for prefix in enabled_output_prefixes(file):
+        for key in rename_dict:
+            m = re.fullmatch(r'_d(\d\d)_', key)
+            if m is None:
+                raise ValueError(f'rename_dict key {key!r} is not a domain token like _d01_ (see output_rename_dict)')
+            written = params.outfile_format.format(prefix=prefix, domain=int(m.group(1)), date=date_str)
+            names.append(renamed_name(written, rules))
+    return names
+
+
+def check_hook_reaches_output(hook, rename_dict, file):
+    """
+    Refuse an output hook whose ``match`` can never fire: it matches none of the file names this run
+    DELIVERS. Those are the names wrf.exe writes (the keys of ``rename_dict``, d01..dN) passed through
+    the same rename the delivery applies, so under run = [2] the hook sees wrfout_d02_*, never d01.
+    A hook that never fires is not an error the run reports anywhere: its consumer just finds nothing
+    when WRF is done. Raises ValueError before any preprocessing is spent.
+    """
+    if hook is None:
+        return
+    delivered = delivered_output_names(rename_dict, file)
+    if not any(fnmatch.fnmatch(name, hook['match']) for name in delivered):
+        raise ValueError(
+            f"[hooks].match = {hook['match']!r} matches none of the files this run delivers, so the hook would "
+            f"never fire. Delivered names carry the [domains].run ids, e.g. {sorted(delivered)[:4]}"
+        )
+
+
 def rename_files(files, rename_dict):
     """Apply every matching rename rule to each file, one os.rename per file.
 
@@ -259,10 +336,7 @@ def rename_files(files, rename_dict):
     for file_path in sorted(files, reverse=True):
         orig_path, orig_file_name = os.path.split(file_path)
 
-        new_file_name = orig_file_name
-        for orig, new in rename_dict.items():
-            if orig in orig_file_name:
-                new_file_name = new_file_name.replace(orig, new)
+        new_file_name = renamed_name(orig_file_name, rename_dict)
 
         if new_file_name == orig_file_name:
             new_files.append(file_path)
